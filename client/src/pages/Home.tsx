@@ -1,33 +1,67 @@
-import { useAuth } from "@/_core/hooks/useAuth";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AlertCircle, ArrowRight, Check, Download, Headphones, Loader2, Pause, Play, RotateCcw, Sparkles, Volume2, Wand2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Loader2 } from "lucide-react";
-import { Streamdown } from 'streamdown';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Label } from "@/components/ui/label"; import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Slider } from "@/components/ui/slider";
+import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
+import { useAuth } from "@/_core/hooks/useAuth";
+import { trpc } from "@/lib/trpc";
+import { startLogin } from "@/const";
 
-/**
- * All content in this page are only for example, replace with your own feature implementation
- * When building pages, remember your instructions in Frontend Workflow, Frontend Best Practices, Design Guide and Common Pitfalls
- */
+const SAMPLE = "Revenue grew 18% month over month to $128,400, while customer retention reached 94.2% in Q2 2026.";
+
 export default function Home() {
-  // The useAuth hook provides authentication state.
-  // To implement login/logout, call logout(), or start login from an event
-  // handler: onClick={() => startLogin()} (imported from "@/const"). Never call
-  // startLogin() during render (no href={startLogin()}) — it mints a one-time
-  // nonce cookie and must run only at the moment of navigation.
-  let { user, loading, error, isAuthenticated, logout } = useAuth();
+  const { user, loading, isAuthenticated } = useAuth();
+  const [text, setText] = useState(SAMPLE);
+  const [languageCode, setLanguageCode] = useState("en-US");
+  const [voiceId, setVoiceId] = useState("Charon");
+  const [speed, setSpeed] = useState(1);   const [playbackRate, setPlaybackRate] = useState(1);   const [sourceType, setSourceType] = useState<"insight" | "report" | "user_text">("user_text"); const [sourceId, setSourceId] = useState("");
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [statusMessage, setStatusMessage] = useState("Ready to turn an insight into audio.");
+  const [fallbackSpeaking, setFallbackSpeaking] = useState(false);
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const config = trpc.tts.config.useQuery();
+  const create = trpc.tts.create.useMutation({ onSuccess: job => { setJobId(job?.jobId ?? null); setStatusMessage(job?.status === "ready" ? "Audio is ready to play." : "Audio generation finished."); }, onError: error => setStatusMessage(error.message) });
+  const audioUrl = trpc.tts.audioUrl.useQuery({ workspaceId: "user", jobId: jobId ?? "00000000-0000-0000-0000-000000000000" }, { enabled: Boolean(jobId) });
+  const voices = useMemo(() => config.data?.voices ?? [], [config.data]);
+  const maxChars = config.data?.maxChars ?? 5000;
+  const supported = Boolean(config.data);
 
-  // If theme is switchable in App.tsx, we can implement theme toggling like this:
-  // const { theme, toggleTheme } = useTheme();
+  useEffect(() => { if (audioUrl.data?.url && audioRef.current) { audioRef.current.src = audioUrl.data.url; audioRef.current.playbackRate = playbackRate; } }, [audioUrl.data?.url, playbackRate]);
+  useEffect(() => () => { if ("speechSynthesis" in window) window.speechSynthesis.cancel(); }, []);
 
-  return (
-    <div className="min-h-screen flex flex-col">
-      <main>
-        {/* Example: lucide-react for icons */}
-        <Loader2 className="animate-spin" />
-        Example Page
-        {/* Example: Streamdown for markdown rendering */}
-        <Streamdown>Any **markdown** content</Streamdown>
-        <Button variant="default">Example Button</Button>
-      </main>
+  const generate = () => {
+    if (!isAuthenticated) { startLogin(); return; }
+    setFallbackSpeaking(false); setStatusMessage("Generating audio…");
+    create.mutate({ workspaceId: "user", text, languageCode, voiceId, speed, sourceType, sourceId: sourceId || undefined, idempotencyKey: crypto.randomUUID() });
+  };
+  const speakOnDevice = () => {
+    if (!("speechSynthesis" in window)) { setStatusMessage("Device read-aloud is not available in this browser."); return; }
+    if (fallbackSpeaking) { window.speechSynthesis.cancel(); setFallbackSpeaking(false); setStatusMessage("Device read-aloud paused."); return; }
+    const utterance = new SpeechSynthesisUtterance(text); utterance.lang = languageCode; utterance.rate = speed; utterance.onend = () => setFallbackSpeaking(false); window.speechSynthesis.cancel(); window.speechSynthesis.speak(utterance); setFallbackSpeaking(true); setStatusMessage("Reading aloud on this device.");
+  };
+  const clear = () => { setText(""); setJobId(null); setStatusMessage("Ready for new text."); if (audioRef.current) audioRef.current.removeAttribute("src"); };
+
+  return <main className="min-h-screen bg-[#f7f8fb] text-slate-950">
+    <div className="mx-auto grid min-h-screen max-w-7xl grid-cols-1 gap-10 px-5 py-8 lg:grid-cols-[0.8fr_1.2fr] lg:items-center lg:px-12">
+      <section className="space-y-7">
+        <div className="flex items-center gap-3"><div className="grid size-11 place-items-center rounded-2xl bg-slate-950 text-white shadow-lg"><Sparkles size={19} /></div><span className="text-sm font-semibold tracking-[0.18em] text-slate-500 uppercase">Bouncy AI · Voice layer</span></div>
+        <div><Badge className="mb-5 rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1 text-indigo-700 hover:bg-indigo-50">Listen panel</Badge><h1 className="max-w-xl text-5xl font-semibold leading-[1.02] tracking-[-0.05em] sm:text-6xl">Make every insight easier to hear.</h1><p className="mt-6 max-w-lg text-lg leading-8 text-slate-600">Turn reports, dashboard summaries, and your own words into a clear voiceover—without leaving the analysis.</p></div>
+        <div className="grid max-w-lg grid-cols-3 gap-3 text-sm"><div className="rounded-2xl border border-slate-200 bg-white p-4"><Headphones className="mb-5 text-indigo-600" size={19} /><span className="font-medium">Listen in context</span></div><div className="rounded-2xl border border-slate-200 bg-white p-4"><Volume2 className="mb-5 text-indigo-600" size={19} /><span className="font-medium">Natural delivery</span></div><div className="rounded-2xl border border-slate-200 bg-white p-4"><Check className="mb-5 text-indigo-600" size={19} /><span className="font-medium">Manual by design</span></div></div>
+      </section>
+      <Card className="overflow-hidden rounded-[2rem] border-0 bg-white shadow-[0_24px_80px_rgba(15,23,42,0.10)]"><CardHeader className="border-b border-slate-100 bg-slate-950 px-6 py-7 text-white sm:px-9"><div className="flex items-start justify-between gap-4"><div><CardTitle className="text-2xl tracking-tight">Listen</CardTitle><CardDescription className="mt-2 text-slate-300">Paste an insight, report section, or write something new.</CardDescription></div><Wand2 className="text-indigo-300" size={25} /></div></CardHeader><CardContent className="space-y-7 px-6 py-7 sm:px-9">
+        {!isAuthenticated && !loading && <div className="flex items-start gap-3 rounded-2xl border border-indigo-100 bg-indigo-50 p-4 text-sm text-indigo-900"><AlertCircle size={18} className="mt-0.5 shrink-0" /><div><strong>Sign in to generate cloud audio.</strong><p className="mt-1 text-indigo-700">You can still preview the labeled device read-aloud fallback below.</p></div></div>}
+        <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="tts-text">Text to speak</Label><span className={`text-xs ${text.length > maxChars ? "text-red-600" : "text-slate-400"}`}>{text.length.toLocaleString()} / {maxChars.toLocaleString()}</span></div><Textarea id="tts-text" value={text} onChange={event => setText(event.target.value)} maxLength={maxChars + 100} className="min-h-44 resize-y rounded-2xl border-slate-200 bg-slate-50/70 p-4 leading-7 focus-visible:ring-indigo-500" placeholder="Write or paste an insight…" aria-describedby="tts-status" /></div>
+        <div className="grid gap-4 sm:grid-cols-3"><div className="space-y-2"><Label>Source</Label><Select value={sourceType} onValueChange={value => setSourceType(value as typeof sourceType)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="user_text">My text</SelectItem><SelectItem value="insight">Bouncy insight</SelectItem><SelectItem value="report">Report section</SelectItem></SelectContent></Select></div>{sourceType !== "user_text" && <div className="space-y-2"><Label htmlFor="source-id">Source ID</Label><Input id="source-id" value={sourceId} onChange={event => setSourceId(event.target.value)} placeholder="e.g. insight-123" /></div>}<div className="space-y-2"><Label>Language</Label><Select value={languageCode} onValueChange={setLanguageCode}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{(config.data?.languages ?? ["en-US"]).map(language => <SelectItem key={language} value={language}>{language}</SelectItem>)}</SelectContent></Select></div><div className="space-y-2"><Label>Voice</Label><Select value={voiceId} onValueChange={setVoiceId}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{voices.map(voice => <SelectItem key={voice.id} value={voice.id}>{voice.label}</SelectItem>)}</SelectContent></Select></div></div>
+        <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="speed">Speech speed</Label><span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold">{speed.toFixed(2)}×</span></div><Slider id="speed" min={0.75} max={1.5} step={0.25} value={[speed]} onValueChange={value => setSpeed(value[0] ?? 1)} aria-label="Speech speed" /></div>
+        <div id="tts-status" role="status" aria-live="polite" className="min-h-5 text-sm text-slate-600">{create.isPending && <Loader2 className="mr-2 inline animate-spin" size={15} />}{statusMessage}</div>
+        {audioUrl.data?.url && <div className="space-y-3 rounded-2xl border border-indigo-100 bg-indigo-50/60 p-4"><div className="flex items-center justify-between gap-3"><span className="text-sm font-semibold text-indigo-950">Cloud audio ready</span><Badge className="bg-white text-indigo-700 hover:bg-white">Private link</Badge></div><audio ref={audioRef} controls preload="metadata" className="w-full" aria-label="Generated Bouncy AI voiceover" /><div className="flex items-center gap-3"><Label htmlFor="playback-rate" className="text-xs text-indigo-900">Playback speed</Label><Select value={String(playbackRate)} onValueChange={value => { const rate = Number(value); setPlaybackRate(rate); if (audioRef.current) audioRef.current.playbackRate = rate; }}><SelectTrigger id="playback-rate" className="h-8 w-24 bg-white text-xs"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="0.75">0.75×</SelectItem><SelectItem value="1">1×</SelectItem><SelectItem value="1.25">1.25×</SelectItem><SelectItem value="1.5">1.5×</SelectItem></SelectContent></Select></div><div className="flex flex-wrap gap-2"><Button variant="outline" size="sm" onClick={() => { setJobId(null); generate(); }}><RotateCcw size={15} /> Regenerate</Button><Button variant="outline" size="sm" asChild><a href={audioUrl.data.url} download="bouncy-ai-voiceover.mp3"><Download size={15} /> Download MP3</a></Button></div></div>}
+        <div className="flex flex-col gap-3 sm:flex-row"><Button className="h-12 flex-1 rounded-xl bg-indigo-600 text-base shadow-lg shadow-indigo-200 hover:bg-indigo-700" onClick={generate} disabled={!supported || create.isPending || !text.trim() || text.length > maxChars}>{create.isPending ? <Loader2 className="animate-spin" /> : <Play size={17} />} Generate cloud audio <ArrowRight size={16} /></Button><Button variant="outline" className="h-12 rounded-xl border-slate-200" onClick={speakOnDevice} disabled={!text.trim()}>{fallbackSpeaking ? <Pause size={17} /> : <Volume2 size={17} />} {fallbackSpeaking ? "Stop device read-aloud" : "Read aloud on this device"}</Button></div>
+        <div className="flex items-center justify-between border-t border-slate-100 pt-4"><p className="text-xs leading-5 text-slate-500">Audio generation is always manual. Device read-aloud uses your browser’s available voice.</p><Button variant="ghost" size="sm" onClick={clear} className="text-slate-500">Clear</Button></div>
+      </CardContent></Card>
     </div>
-  );
+  </main>;
 }

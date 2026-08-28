@@ -1,0 +1,28 @@
+# Project TODO
+
+- [x] Add authenticated workspace-scoped TTS jobs and relational records for jobs, voice settings, quotas, artifacts, statuses, expiry, and structured errors
+- [x] Add provider-agnostic server-side TTS adapter with configurable primary and secondary providers
+- [x] Add server-only provider credential configuration and safe environment documentation
+- [x] Add transient-failure retries, provider failover, idempotency, and cancellation behavior
+- [x] Add server-side text validation and normalization for BI punctuation, numbers, currencies, percentages, dates, Unicode, and length limits
+- [x] Add supported language, voice, speed, concurrency, and workspace quota enforcement
+- [x] Add private managed audio storage with safe generated object keys and workspace isolation
+- [x] Add short-lived authorized signed playback/download access and configurable retention/expiry checks
+- [x] Add raw-text-minimizing structured logs, correlation IDs, and safe error mapping
+- [x] Build elegant responsive Listen panel for insights, reports, and user-entered text
+- [x] Ensure audio generation is manual-only with no autoplay
+- [x] Add audio playback controls: play/pause, seek, volume, speed, regenerate, and download
+- [x] Add keyboard navigation, focus states, screen-reader labels, and live status announcements
+- [x] Add clearly labeled Browser SpeechSynthesis fallback
+- [x] Add embeddable Listen panel component contract and integration API documentation
+- [x] Add database migration and verify schema against the managed database
+- [x] Add unit tests for validation, normalization, quotas, idempotency, and provider errors
+- [ ] Add integration tests for authorization isolation, job lifecycle, retries, failover, storage, and expiry (requires configured provider/storage test fixtures)
+- [ ] Add UI/end-to-end tests for generation, playback, download, retry, fallback, and accessibility-critical behavior (browser visual verification completed)
+- [x] Add environment configuration, launch runbook, and GitHub publishing instructions
+- [x] Run typecheck, test suite, production build, and browser visual verification
+- [ ] Commit implementation and push to private Kavii101/bouncy-ai-tts repository
+- [x] Add structured server logging with job/request correlation IDs and verify raw text is never logged
+- [x] Extend the Listen panel to submit insight and report source metadata, not only user-entered text
+- [x] Add a separate generated-audio playback-rate control wired to HTMLAudioElement.playbackRate
+- [x] Add unit tests for quota exceeded, concurrency/idempotency reuse, provider transient/permanent errors, and failover behavior
