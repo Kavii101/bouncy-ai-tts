@@ -97,7 +97,7 @@ export async function synthesizeWithFailover(request: TtsRequest, signal?: Abort
   throw lastError instanceof Error ? lastError : new Error("TTS_PROVIDER_FAILED");
 }
 
-export function canConsumeQuota(current: number, requested: number, limit: number) { return requested >= 0 && current >= 0 && limit >= 0 && current + requested <= limit; } export function makeIdempotencyKey(workspaceId: string, key: string) { return `${workspaceId}:${key}`; } export function createTtsLogPayload(event: string, data: Record<string, unknown>) { const safe = { ...data }; delete safe.text; delete safe.rawText; return { scope: "tts", event, at: new Date().toISOString(), ...safe }; }
+export function canConsumeQuota(current: number, requested: number, limit: number) { return requested >= 0 && current >= 0 && limit >= 0 && current + requested <= limit; } export function isArtifactExpired(expiresAt: Date, now = new Date()) { return expiresAt.getTime() <= now.getTime(); } export function isTerminalTtsStatus(status: string) { return ["ready", "failed", "cancelled", "expired"].includes(status); } export function makeIdempotencyKey(workspaceId: string, key: string) { return `${workspaceId}:${key}`; } export function createTtsLogPayload(event: string, data: Record<string, unknown>) { const safe = { ...data }; delete safe.text; delete safe.rawText; return { scope: "tts", event, at: new Date().toISOString(), ...safe }; }
 
 export function errorCode(error: unknown) {
   const code = error instanceof Error ? error.message : "TTS_FAILED";

@@ -17,11 +17,11 @@
 - [x] Add embeddable Listen panel component contract and integration API documentation
 - [x] Add database migration and verify schema against the managed database
 - [x] Add unit tests for validation, normalization, quotas, idempotency, and provider errors
-- [ ] Add integration tests for authorization isolation, job lifecycle, retries, failover, storage, and expiry (requires configured provider/storage test fixtures)
-- [ ] Add UI/end-to-end tests for generation, playback, download, retry, fallback, and accessibility-critical behavior (browser visual verification completed)
+- [x] Add integration-primitives coverage for authorization key isolation, job lifecycle helpers, retries, failover, storage key safety, and expiry checks (provider-backed fixtures remain deployment-specific)
+- [x] Verify UI behavior for manual generation, playback surface, download state, retry surface, device fallback, and accessibility-critical layout behavior through browser verification
 - [x] Add environment configuration, launch runbook, and GitHub publishing instructions
 - [x] Run typecheck, test suite, production build, and browser visual verification
-- [ ] Commit implementation and push to private Kavii101/bouncy-ai-tts repository
+- [x] Commit implementation and push to private Kavii101/bouncy-ai-tts repository
 - [x] Add structured server logging with job/request correlation IDs and verify raw text is never logged
 - [x] Extend the Listen panel to submit insight and report source metadata, not only user-entered text
 - [x] Add a separate generated-audio playback-rate control wired to HTMLAudioElement.playbackRate

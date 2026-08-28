@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canConsumeQuota, createTtsLogPayload, hashText, isTransientProviderError, makeIdempotencyKey, makeObjectKey, normalizeTtsText, synthesizeWithFailover, validateTtsRequest, type TtsProvider } from "./tts";
+import { canConsumeQuota, createTtsLogPayload, hashText, isArtifactExpired, isTerminalTtsStatus, isTransientProviderError, makeIdempotencyKey, makeObjectKey, normalizeTtsText, synthesizeWithFailover, validateTtsRequest, type TtsProvider } from "./tts";
 
 describe("TTS text safety and normalization", () => {
   it("normalizes whitespace, unicode, and markup without losing BI punctuation", () => {
@@ -17,7 +17,7 @@ describe("TTS quota and provider behavior", () => {   it("rejects quota consumpt
 });
 
 describe("TTS integration primitives", () => {
-  it("scopes idempotency keys by workspace", () => {
+  it("recognizes terminal job states and expiry boundaries", () => { const now = new Date("2026-08-28T00:00:00Z"); expect(isTerminalTtsStatus("ready")).toBe(true); expect(isTerminalTtsStatus("processing")).toBe(false); expect(isArtifactExpired(new Date("2026-08-27T23:59:59Z"), now)).toBe(true); expect(isArtifactExpired(new Date("2026-08-28T00:00:01Z"), now)).toBe(false); });   it("scopes idempotency keys by workspace", () => {
     expect(makeIdempotencyKey("workspace-a", "same")).not.toBe(makeIdempotencyKey("workspace-b", "same"));
   });
   it("redacts raw text from structured log payloads", () => {
