@@ -104,7 +104,7 @@ export function errorCode(error: unknown) {
   return ["TEXT_EMPTY", "TEXT_TOO_LONG", "LANGUAGE_UNSUPPORTED", "VOICE_UNSUPPORTED", "SPEED_UNSUPPORTED", "TTS_CANCELLED", "TTS_PROVIDER_NOT_CONFIGURED"].includes(code) ? code : "TTS_PROVIDER_FAILED";
 }
 
-export const publicTtsConfig = {
+export function validateTranscriptionInput(byteLength: number, mimeType: string, language?: string) {   if (byteLength <= 0) throw new Error("VOICE_EMPTY");   if (byteLength > 16 * 1024 * 1024) throw new Error("VOICE_FILE_TOO_LARGE");   if (!["audio/webm", "audio/mp4", "audio/ogg", "audio/wav", "audio/mpeg"].includes(mimeType)) throw new Error("VOICE_FORMAT_UNSUPPORTED");   if (language && !/^[a-z]{2}(-[A-Z]{2})?$/.test(language)) throw new Error("VOICE_LANGUAGE_INVALID");   return true; }  export const publicTtsConfig = {
   languages: TTS_LANGUAGES,
   voices: TTS_VOICES.map(({ id, label }) => ({ id, label })),
   speeds: TTS_SPEEDS,

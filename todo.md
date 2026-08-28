@@ -26,3 +26,12 @@
 - [x] Extend the Listen panel to submit insight and report source metadata, not only user-entered text
 - [x] Add a separate generated-audio playback-rate control wired to HTMLAudioElement.playbackRate
 - [x] Add unit tests for quota exceeded, concurrency/idempotency reuse, provider transient/permanent errors, and failover behavior
+- [x] Add microphone speech-to-text input mode alongside typing and pasting
+- [x] Add server transcription procedure with authenticated upload, provider integration, and safe error mapping
+- [x] Add editable transcript review before sending text into Listen generation
+- [x] Add microphone permission, recording, processing, unsupported-browser, cancellation, and failure states
+- [x] Add speech-to-text unit, integration, accessibility, and responsive UI verification
+- [x] Update API documentation, embed contract, environment configuration, and launch runbook for speech input
+- [x] Add automated voice.transcribe input validation and protected-flow coverage for size limits, formats, language hints, and service error behavior
+- [x] Add explicit speech-input props and behavior to the embeddable Listen contract
+- [x] Extend the launch runbook with microphone browser support, permission, privacy, and transcription checks

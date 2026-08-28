@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { canConsumeQuota, createTtsLogPayload, hashText, isArtifactExpired, isTerminalTtsStatus, isTransientProviderError, makeIdempotencyKey, makeObjectKey, normalizeTtsText, synthesizeWithFailover, validateTtsRequest, type TtsProvider } from "./tts";
+import { canConsumeQuota, createTtsLogPayload, hashText, isArtifactExpired, isTerminalTtsStatus, isTransientProviderError, makeIdempotencyKey, makeObjectKey, normalizeTtsText, synthesizeWithFailover, validateTranscriptionInput, validateTtsRequest, type TtsProvider } from "./tts";
 
-describe("TTS text safety and normalization", () => {
+describe("Speech-to-text input validation", () => {   it("accepts supported microphone recordings", () => { expect(validateTranscriptionInput(1024, "audio/webm", "en")).toBe(true); });   it("rejects empty, oversized, unsupported, and malformed recordings", () => { expect(() => validateTranscriptionInput(0, "audio/webm")).toThrow("VOICE_EMPTY"); expect(() => validateTranscriptionInput(17 * 1024 * 1024, "audio/webm")).toThrow("VOICE_FILE_TOO_LARGE"); expect(() => validateTranscriptionInput(1024, "audio/aac")).toThrow("VOICE_FORMAT_UNSUPPORTED"); expect(() => validateTranscriptionInput(1024, "audio/webm", "english")).toThrow("VOICE_LANGUAGE_INVALID"); }); });  describe("TTS text safety and normalization", () => {
   it("normalizes whitespace, unicode, and markup without losing BI punctuation", () => {
     const result = normalizeTtsText("  Revenue grew 18%  month over month to $128,400. <b>Retention</b> reached 94.2% in Q2 2026.  ");
     expect(result).toBe("Revenue grew 18% month over month to $128,400. Retention reached 94.2% in Q2 2026.");

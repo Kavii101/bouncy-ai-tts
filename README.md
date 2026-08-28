@@ -82,3 +82,34 @@ gh repo create Kavii101/bouncy-ai-tts --private --source=. --remote=origin --pus
 ## Status
 
 The implementation is ready for provider credentials and Bouncy AI’s real workspace membership model. The browser fallback works without a cloud provider; cloud generation requires a configured server-side compatible provider.
+
+## Speech-to-text input
+
+The Listen panel now supports three input paths: typing, pasting, and **Speak to enter text**. The microphone control requests permission only after the user activates it, records locally with `MediaRecorder`, shows a Stop recording state, uploads the recording through the protected `voice.transcribe` procedure, and inserts the returned transcript into the editable textarea. Users must review the transcript before manually generating TTS audio.
+
+The transcription procedure accepts `audioBase64`, an allowlisted audio MIME type, an optional language hint, and a workspace ID. Recordings are limited to 16 MB, stored under a generated workspace-scoped key, sent through the built-in Whisper-compatible transcription helper, and never written to application logs as raw audio or transcript content. Permission denial, unsupported browsers, oversized recordings, failed transcription, and cancellation-safe cleanup all return actionable UI status messages.
+
+Speech input requires HTTPS and a browser that supports `MediaRecorder`, `navigator.mediaDevices.getUserMedia`, and the selected recording MIME type. The text remains editable after transcription, and the existing server-side TTS normalization and quota validation still apply before cloud audio generation.
+
+### Embeddable speech-input contract
+
+The extracted Listen component should accept these additional props:
+
+```ts
+type ListenPanelProps = {
+  source: {
+    sourceType: "insight" | "report" | "user_text";
+    sourceId?: string;
+    workspaceId: string;
+    initialText?: string;
+  };
+  onTranscript?: (text: string, language?: string) => void;
+  allowSpeechInput?: boolean;
+};
+```
+
+When `allowSpeechInput` is enabled, the component exposes a **Speak to enter text** action. It must request microphone permission only after activation, keep the transcript editable, call `onTranscript` after successful transcription, and never begin TTS generation automatically. The parent insight/report surface remains responsible for supplying the actual source text and identifiers.
+
+### Speech-input launch checks
+
+Before enabling speech input for customers, verify HTTPS, microphone permission behavior, MediaRecorder support in the supported browser matrix, the 16 MB recording limit, correct MIME negotiation, provider availability, workspace authorization, raw-audio retention, and redacted logs. Test permission denial, stopping a recording, empty or silent recordings, network interruption, transcription errors, transcript editing, and manual transition from transcript to Listen generation. Tell users that audio is uploaded for transcription and explain the applicable retention policy.
