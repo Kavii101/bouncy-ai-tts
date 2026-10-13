@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertCircle, CheckCircle2, Database, FileText, Loader2, Mic, MonitorUp, Radio, Shield, Sparkles, Square, Trash2 } from "lucide-react";
+import { AlertCircle, CheckCircle2, Database, ExternalLink, FileText, Loader2, Mic, MonitorUp, Radio, Shield, Sparkles, Square, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -9,6 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
 import { useDualStreamCapture } from "@/hooks/useDualStreamCapture";
+import { useAnswersPublisher } from "@/hooks/useAnswersChannel";
 import {
   DEFAULT_LIVE_CONFIG,
   planSuggestion,
@@ -458,6 +459,7 @@ function LiveTab() {
 
   const transcribe = trpc.interview.live.transcribeSegment.useMutation();
   const suggest = trpc.interview.live.suggest.useMutation();
+  const publisher = useAnswersPublisher();
 
   const setInterim = (text: string) => {
     interimRef.current = text;
@@ -548,21 +550,33 @@ function LiveTab() {
 
   const listening = capture.micState === "listening" || capture.tabState === "listening";
 
+  // Mirror listening state to the answers window.
+  useEffect(() => {
+    publisher.publish({ type: "status", listening });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listening]);
+
   const fireSuggest = async (question: string) => {
     inFlightRef.current = true;
     lastSuggestedRef.current = question;
     setSuggestion(null);
     setStreamPreview({ directAnswer: "", bullets: [] });
     const recent = recentTurns(segmentsRef.current);
+    const turnId = crypto.randomUUID();
+    publisher.publish({ type: "start", id: turnId, question, at: Date.now() });
     try {
       // Fast path: stream tokens for immediate display; finalize with grounding.
       const streamed = await streamSuggestion(
         question,
         recent,
-        fields => setStreamPreview(fields),
+        fields => {
+          setStreamPreview(fields);
+          publisher.publish({ type: "stream", id: turnId, directAnswer: fields.directAnswer, bullets: fields.bullets });
+        },
         final => {
           setSuggestion(final);
           setStreamPreview(null);
+          publisher.publish({ type: "final", id: turnId, question, suggestion: final, at: Date.now() });
         },
       );
       if (!streamed) {
@@ -570,6 +584,7 @@ function LiveTab() {
         const res = await suggest.mutateAsync({ workspaceId: WS, question, recent });
         setSuggestion(res.suggestion);
         setStreamPreview(null);
+        publisher.publish({ type: "final", id: turnId, question, suggestion: res.suggestion, at: Date.now() });
       }
     } catch {
       setStreamPreview(null);
@@ -602,6 +617,7 @@ function LiveTab() {
     setInterim("");
     setSuggestion(null);
     setStreamPreview(null);
+    publisher.reset();
     setStatus("Session cleared.");
   };
 
@@ -652,6 +668,9 @@ function LiveTab() {
             </Button>
             <Button variant="ghost" size="sm" onClick={clearSession}>
               <Trash2 className="mr-2 h-4 w-4" /> Clear session
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => window.open("/interview/answers", "interview-answers", "noopener")}>
+              <ExternalLink className="mr-2 h-4 w-4" /> Open answers window
             </Button>
           </div>
           {capture.error ? <ErrorNote message={capture.error} /> : null}

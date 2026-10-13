@@ -126,6 +126,30 @@ Interview tab/system audio
 - **Consent + control**: a preflight acknowledgement gates capture; a visible
   "Listening" state, Stop, and Clear-session controls are always present.
 
+## Two-window setup (control + answers)
+
+Live assist is split across two surfaces:
+
+- **Control window** — the Live tab at `/interview`. The only surface that
+  captures audio, transcribes, and calls the model. "Open answers window" opens
+  the second page.
+- **Answers window** — `/interview/answers`, receive-only. A big, calm
+  teleprompter showing the current question, the direct answer + bullets to say,
+  confidence, "verify before stating as fact" warnings, and a history of earlier
+  questions. It never captures audio, so there is no double-capture.
+
+**Transport** is a `localStorage` snapshot + the `storage` event
+(`shared/interview/liveChannel.ts`, pure + unit-tested): the control window
+writes a reduced snapshot on each turn (`start → stream → final`, plus
+`status`/`clear`), and the answers window — a separate window/tab on the same
+browser — seeds from it on open and updates on `storage` events. This needs no
+server, survives reload, and lets the answers window be opened at any time and
+immediately show current state. Streaming writes are throttled.
+
+Scope: same browser (a second window or monitor — the usual teleprompter setup).
+A different *device* would need a server-backed channel (SSE/WebSocket); that is
+the documented upgrade path.
+
 ## SQL safety
 
 The MVP **never executes SQL**. `checkReadOnlySql` tokenizes a query (stripping
