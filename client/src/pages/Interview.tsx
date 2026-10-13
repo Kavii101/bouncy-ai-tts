@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { AlertCircle, CheckCircle2, Database, FileText, Loader2, Shield, Sparkles, Trash2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { AlertCircle, CheckCircle2, Database, FileText, Loader2, Mic, MonitorUp, Radio, Shield, Sparkles, Square, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,6 +8,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
+import { useDualStreamCapture } from "@/hooks/useDualStreamCapture";
+import {
+  DEFAULT_LIVE_CONFIG,
+  planSuggestion,
+  recentTurns,
+  type TranscriptSegment,
+} from "@shared/interview/liveSession";
 
 const WS = "user";
 
@@ -41,17 +48,17 @@ export default function Interview() {
     );
   }
 
-  return <Workspace dialects={config.data.dialects} />;
+  return <Workspace dialects={config.data.dialects} liveAssistEnabled={config.data.liveAssistEnabled} />;
 }
 
-function Workspace({ dialects }: { dialects: readonly string[] }) {
+function Workspace({ dialects, liveAssistEnabled }: { dialects: readonly string[]; liveAssistEnabled: boolean }) {
   return (
     <main className="min-h-screen bg-[#f7f8fb] text-slate-950">
       <div className="mx-auto max-w-5xl px-5 py-8 lg:px-10">
         <header className="mb-6">
           <h1 className="flex items-center gap-2 text-2xl font-semibold"><Sparkles className="h-6 w-6 text-indigo-600" /> Interview Copilot</h1>
           <p className="mt-1 text-sm text-slate-600">
-            Prepare a truthful, evidence-linked brief, practice with feedback, and solve SQL safely. Nothing is recorded; materials stay in your private workspace.
+            Prepare a truthful, evidence-linked brief, practice with feedback, and solve SQL safely. Materials stay in your private workspace.
           </p>
         </header>
 
@@ -61,12 +68,14 @@ function Workspace({ dialects }: { dialects: readonly string[] }) {
             <TabsTrigger value="brief">Brief</TabsTrigger>
             <TabsTrigger value="practice">Practice</TabsTrigger>
             <TabsTrigger value="sql">SQL Lab</TabsTrigger>
+            {liveAssistEnabled ? <TabsTrigger value="live">Live</TabsTrigger> : null}
           </TabsList>
 
           <TabsContent value="setup"><SetupTab /></TabsContent>
           <TabsContent value="brief"><BriefTab /></TabsContent>
           <TabsContent value="practice"><PracticeTab /></TabsContent>
           <TabsContent value="sql"><SqlTab dialects={dialects} /></TabsContent>
+          {liveAssistEnabled ? <TabsContent value="live"><LiveTab /></TabsContent> : null}
         </Tabs>
       </div>
     </main>
@@ -353,6 +362,206 @@ function SqlTab({ dialects }: { dialects: readonly string[] }) {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+// --- Live assist -----------------------------------------------------------
+
+async function blobToBase64(blob: Blob): Promise<string> {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let binary = "";
+  bytes.forEach(b => {
+    binary += String.fromCharCode(b);
+  });
+  return btoa(binary);
+}
+
+function LiveTab() {
+  const [consent, setConsent] = useState(false);
+  const [segments, setSegments] = useState<TranscriptSegment[]>([]);
+  const [suggestion, setSuggestion] = useState<NonNullable<ReturnType<typeof trpc.interview.live.suggest.useMutation>["data"]>["suggestion"] | null>(null);
+  const [status, setStatus] = useState<string>("");
+
+  const segmentsRef = useRef<TranscriptSegment[]>([]);
+  const lastSuggestedRef = useRef<string | null>(null);
+  const seqRef = useRef(0);
+  const inFlightRef = useRef(false);
+
+  const transcribe = trpc.interview.live.transcribeSegment.useMutation();
+  const suggest = trpc.interview.live.suggest.useMutation();
+
+  const addSegment = (seg: TranscriptSegment) => {
+    setSegments(prev => {
+      const next = [...prev, seg];
+      segmentsRef.current = next;
+      return next;
+    });
+  };
+
+  const capture = useDualStreamCapture(async u => {
+    try {
+      const audioBase64 = await blobToBase64(u.blob);
+      const res = await transcribe.mutateAsync({
+        workspaceId: WS,
+        source: u.source,
+        audioBase64,
+        mimeType: u.mimeType,
+        seq: seqRef.current++,
+      });
+      if (res.text.trim()) {
+        addSegment({ id: `${u.source}-${u.endedAt}-${Math.random().toString(36).slice(2, 7)}`, source: u.source, text: res.text.trim(), at: u.endedAt });
+      }
+    } catch {
+      setStatus("A segment could not be transcribed. Still listening.");
+    }
+  });
+
+  const listening = capture.micState === "listening" || capture.tabState === "listening";
+
+  const fireSuggest = async (question: string) => {
+    inFlightRef.current = true;
+    lastSuggestedRef.current = question;
+    try {
+      const res = await suggest.mutateAsync({ workspaceId: WS, question, recent: recentTurns(segmentsRef.current) });
+      setSuggestion(res.suggestion);
+    } catch {
+      setStatus("Could not get a suggestion. Check that your brief is approved.");
+    } finally {
+      inFlightRef.current = false;
+    }
+  };
+
+  // Auto-suggest: once the interviewer's turn ends (a pause), the tested planner
+  // decides whether it's a new question, a repeat/clarification to re-answer, or
+  // an echo to skip.
+  useEffect(() => {
+    if (!listening) return;
+    const timer = window.setInterval(() => {
+      if (inFlightRef.current) return;
+      const plan = planSuggestion(segmentsRef.current, lastSuggestedRef.current, Date.now(), DEFAULT_LIVE_CONFIG);
+      if (plan.ready) void fireSuggest(plan.question);
+    }, 500);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listening]);
+
+  const clearSession = () => {
+    capture.stop();
+    setSegments([]);
+    segmentsRef.current = [];
+    lastSuggestedRef.current = null;
+    seqRef.current = 0;
+    setSuggestion(null);
+    setStatus("Session cleared.");
+  };
+
+  if (!consent) {
+    return (
+      <Card className="max-w-2xl">
+        <CardHeader>
+          <CardTitle className="text-lg flex items-center gap-2"><Shield className="h-5 w-5" /> Before you start</CardTitle>
+          <CardDescription>Live assist listens to two separate streams — your microphone and the interview tab's audio — and shows short grounded suggestions. Capture is manual, visible, and stoppable at any time.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm">
+          <label className="flex items-start gap-2">
+            <input type="checkbox" className="mt-1" checked={consent} onChange={e => setConsent(e.target.checked)} />
+            <span>I confirm I am permitted to use assistive software in this interview and to capture the audio I will share.</span>
+          </label>
+          <p className="text-slate-500">Your brief must be <strong>approved</strong> for suggestions to work.</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-lg flex items-center justify-between">
+            <span>Live assist</span>
+            {listening ? (
+              <span className="flex items-center gap-2 text-sm font-normal text-red-600">
+                <span className="inline-block h-2.5 w-2.5 animate-pulse rounded-full bg-red-600" /> Listening
+              </span>
+            ) : (
+              <span className="text-sm font-normal text-slate-400">Idle</span>
+            )}
+          </CardTitle>
+          <CardDescription>Start the streams you want. The interviewer stream drives suggestions; your mic is attributed to you.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex flex-wrap gap-2">
+            <Button variant={capture.micState === "listening" ? "secondary" : "default"} size="sm" onClick={() => capture.startMic()} disabled={capture.micState === "listening"}>
+              <Mic className="mr-2 h-4 w-4" /> {capture.micState === "listening" ? "Mic on" : "Start my mic"}
+            </Button>
+            <Button variant={capture.tabState === "listening" ? "secondary" : "default"} size="sm" onClick={() => capture.startTab()} disabled={capture.tabState === "listening"}>
+              <MonitorUp className="mr-2 h-4 w-4" /> {capture.tabState === "listening" ? "Tab audio on" : "Share interview audio"}
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => capture.stop()} disabled={!listening}>
+              <Square className="mr-2 h-4 w-4" /> Stop
+            </Button>
+            <Button variant="ghost" size="sm" onClick={clearSession}>
+              <Trash2 className="mr-2 h-4 w-4" /> Clear session
+            </Button>
+          </div>
+          {capture.error ? <ErrorNote message={capture.error} /> : null}
+          {status ? <p className="text-xs text-slate-500">{status}</p> : null}
+        </CardContent>
+      </Card>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <TranscriptColumn title="You (mic)" source="candidate" segments={segments} />
+        <TranscriptColumn title="Interviewer (tab)" source="interviewer" segments={segments} />
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-lg flex items-center gap-2">
+            <Radio className="h-5 w-5" /> Suggestion
+            {suggest.isPending ? <Loader2 className="h-4 w-4 animate-spin text-slate-400" /> : null}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm">
+          {suggestion ? (
+            <>
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant={suggestion.confidence === "high" ? "default" : "secondary"}>confidence: {suggestion.confidence}</Badge>
+                {suggestion.shouldVerify ? <Badge variant="destructive">verify before using</Badge> : null}
+              </div>
+              <p className="font-medium text-slate-800">{suggestion.directAnswer}</p>
+              <FeedbackList title="Say this" items={suggestion.bullets} />
+              {suggestion.evidence.length ? (
+                <div>
+                  <p className="font-medium text-slate-700">Evidence</p>
+                  <ul className="list-disc pl-5 text-slate-600">{suggestion.evidence.map((e, i) => <li key={i}><Badge variant="outline" className="mr-1">{e.evidenceId}</Badge>{e.claim}</li>)}</ul>
+                </div>
+              ) : null}
+              {suggestion.unsupportedClaims.length ? (
+                <div className="rounded-md bg-amber-50 p-2 text-amber-800">
+                  <p className="font-medium">Not in your evidence — don't state as fact</p>
+                  <ul className="list-disc pl-5">{suggestion.unsupportedClaims.map((c, i) => <li key={i}>{c}</li>)}</ul>
+                </div>
+              ) : null}
+              {suggestion.followUpQuestion ? <p className="text-slate-500">Clarifying q: {suggestion.followUpQuestion}</p> : null}
+            </>
+          ) : (
+            <p className="text-slate-500">Suggestions appear automatically after the interviewer finishes a question.</p>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function TranscriptColumn({ title, source, segments }: { title: string; source: "candidate" | "interviewer"; segments: TranscriptSegment[] }) {
+  const rows = segments.filter(s => s.source === source);
+  return (
+    <Card>
+      <CardHeader className="pb-2"><CardTitle className="text-sm text-slate-600">{title}</CardTitle></CardHeader>
+      <CardContent className="max-h-56 space-y-1.5 overflow-y-auto text-sm">
+        {rows.length ? rows.map(s => <p key={s.id} className="text-slate-700">{s.text}</p>) : <p className="text-slate-400">—</p>}
+      </CardContent>
+    </Card>
   );
 }
 

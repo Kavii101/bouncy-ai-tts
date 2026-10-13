@@ -50,7 +50,11 @@ workspace) and gated by `INTERVIEW_COPILOT_ENABLED`.
 | `interview.practice.submitAnswer` | Protected | Rubric feedback; stores the answer as a hash only |
 | `interview.sql.generate` | Protected | Structured SQL answer + read-only safety classification |
 | `interview.sql.check` | Protected | Pure read-only safety check for user-pasted SQL (no LLM, no execution) |
-| `interview.live.suggest` | Protected, 2nd flag | Grounded live suggestion (off by default) |
+| `interview.live.transcribeSegment` | 2nd flag | Transcribe one utterance chunk from one stream (`candidate` or `interviewer`) |
+| `interview.live.suggest` | 2nd flag | Grounded live suggestion, with recent turns as context |
+
+(Auth note: this build is single-user by choice — procedures are `publicProcedure`;
+a shared `solo` workspace is used when no session is present.)
 
 ## Data flow (Prepare → Practice)
 
@@ -82,6 +86,30 @@ Paste JD/resume ──> interview_materials (text, workspace-scoped)
   not in the approved brief is dropped and surfaced as an unsupported claim, and
   `shouldVerify` / confidence are forced down whenever anything is unverified.
 
+## Live assist — dual-stream capture (behind `INTERVIEW_LIVE_ASSIST_ENABLED`)
+
+Speaker attribution is by construction, not diarization: two physically
+separate sources are captured and never mixed.
+
+```
+Your mic   (getUserMedia)        ──► "candidate"   transcript   (your answers)
+Interview tab/system audio
+   (getDisplayMedia; tabCapture
+    extension later)              ──► "interviewer" transcript   ──► drives suggestions
+```
+
+- **VAD-gated capture** (`useDualStreamCapture`): each stream records only while
+  someone speaks (RMS threshold + a silence tail), emitting one utterance-aligned
+  chunk per turn — fewer transcription calls, cleaner turn boundaries.
+- **The planner** (`shared/interview/liveSession.ts`, pure + unit-tested) decides
+  when to answer: it waits for the interviewer's pause, assembles the question
+  from the trailing turn, and classifies it as **new**, a **repeat/clarification**
+  to re-answer with the clearer text, or an **echo** to skip (token-similarity).
+- **Turn context**: recent turns (both sources) are passed to `suggest` so a
+  clarification is understood in context.
+- **Consent + control**: a preflight acknowledgement gates capture; a visible
+  "Listening" state, Stop, and Clear-session controls are always present.
+
 ## SQL safety
 
 The MVP **never executes SQL**. `checkReadOnlySql` tokenizes a query (stripping
@@ -104,10 +132,11 @@ reuse. See `server/interview/sql-engine.test.ts` for the adversarial cases.
 
 ## Deferred (see the plan)
 
-File-upload parsing, isolated read-only SQL **execution**/validation, the live
-transcription UI, multi-stream capture, the Chrome extension, provider
-failover/circuit breakers, a storage cleanup worker, and the broad public
-release of Live assist.
+File-upload parsing, isolated read-only SQL **execution**/validation, true
+**streaming** STT and **token-streaming** of the suggestion (today each utterance
+is transcribed as one batch chunk, so there is a per-turn delay), the Chrome
+`tabCapture` extension and native desktop capture, provider failover/circuit
+breakers, a storage cleanup worker, and the broad public release of Live assist.
 
 ## Database
 

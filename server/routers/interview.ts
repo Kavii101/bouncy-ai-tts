@@ -7,11 +7,14 @@
 // local "solo" workspace. Errors map to safe, user-facing messages without
 // leaking raw content.
 
+import crypto from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { ENV } from "../_core/env";
 import { publicProcedure, router } from "../_core/trpc";
+import { transcribeAudio } from "../_core/voiceTranscription";
 import { ensureWorkspaceAccess } from "../db";
+import { storageGetSignedUrl, storagePut } from "../storage";
 import { extractBrief } from "../interview/extraction";
 import { scoreAnswer, suggestAnswer } from "../interview/answer-engine";
 import { checkReadOnlySql, generateSql } from "../interview/sql-engine";
@@ -46,6 +49,12 @@ async function resolveWorkspace(ctx: Ctx, inputWorkspaceId: string): Promise<{ w
 function requireEnabled() {
   if (!ENV.interviewCopilotEnabled) {
     throw new TRPCError({ code: "NOT_FOUND", message: "Interview Copilot is not enabled." });
+  }
+}
+
+function requireLiveAssist() {
+  if (!ENV.interviewLiveAssistEnabled) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Live assist is not enabled." });
   }
 }
 
@@ -295,14 +304,62 @@ export const interviewRouter = router({
   }),
 
   live: router({
-    // Gated behind its own flag; not wired into the MVP client.
-    suggest: publicProcedure
-      .input(workspaceInput.extend({ question: z.string().min(1).max(2000) }))
+    // Both procedures are gated behind INTERVIEW_LIVE_ASSIST_ENABLED.
+
+    // Transcribe one short audio chunk from one stream. The caller tags the
+    // source ("candidate" = your mic, "interviewer" = the shared interview tab/
+    // system audio), so speaker attribution is known by construction — the two
+    // streams are captured separately and never mixed here.
+    transcribeSegment: publicProcedure
+      .input(
+        workspaceInput.extend({
+          source: z.enum(["candidate", "interviewer"]),
+          audioBase64: z.string().min(16).max(22_000_000),
+          mimeType: z.enum(["audio/webm", "audio/mp4", "audio/ogg", "audio/wav", "audio/mpeg"]),
+          language: z.string().max(8).optional(),
+          seq: z.number().int().min(0).max(1_000_000),
+        }),
+      )
       .mutation(async ({ ctx, input }) => {
         requireEnabled();
-        if (!ENV.interviewLiveAssistEnabled) {
-          throw new TRPCError({ code: "NOT_FOUND", message: "Live assist is not enabled." });
+        requireLiveAssist();
+        try {
+          const { workspaceId, userId } = await resolveWorkspace(ctx, input.workspaceId);
+          const audio = Buffer.from(input.audioBase64, "base64");
+          if (audio.byteLength > 16 * 1024 * 1024) throw new Error("VOICE_FILE_TOO_LARGE");
+          const key = `interview-live/${workspaceId}/${input.source}/${input.seq}-${crypto.randomUUID()}`;
+          const uploaded = await storagePut(key, audio, input.mimeType);
+          const signedUrl = await storageGetSignedUrl(uploaded.key);
+          const result = await transcribeAudio({
+            audioUrl: signedUrl,
+            language: input.language,
+            prompt: "Transcribe one short segment of a live job interview accurately.",
+          });
+          if ("error" in result) throw new Error(result.code);
+          interviewLog("live_segment", { workspaceId, userId, source: input.source, seq: input.seq, charCount: result.text.length });
+          return { source: input.source, seq: input.seq, text: result.text, language: result.language };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "";
+          if (message === "VOICE_FILE_TOO_LARGE") {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Keep each audio chunk under 16 MB." });
+          }
+          mapError(error);
         }
+      }),
+
+    suggest: publicProcedure
+      .input(
+        workspaceInput.extend({
+          question: z.string().min(1).max(2000),
+          recent: z
+            .array(z.object({ source: z.enum(["candidate", "interviewer"]), text: z.string().max(2000) }))
+            .max(12)
+            .optional(),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        requireEnabled();
+        requireLiveAssist();
         try {
           const { workspaceId, userId } = await resolveWorkspace(ctx, input.workspaceId);
           const row = await store.getBrief(workspaceId);
@@ -310,8 +367,9 @@ export const interviewRouter = router({
             throw new TRPCError({ code: "BAD_REQUEST", message: "Approve your brief before using live assist." });
           }
           const brief = parseStoredBrief(row.briefJson);
-          const { suggestion, model } = await suggestAnswer({ question: input.question, brief });
-          interviewLog("live_suggested", { workspaceId, userId, model, confidence: suggestion.confidence, shouldVerify: suggestion.shouldVerify });
+          const started = Date.now();
+          const { suggestion, model } = await suggestAnswer({ question: input.question, brief, recent: input.recent });
+          interviewLog("live_suggested", { workspaceId, userId, model, latencyMs: Date.now() - started, confidence: suggestion.confidence, shouldVerify: suggestion.shouldVerify });
           return { suggestion };
         } catch (error) {
           mapError(error);
