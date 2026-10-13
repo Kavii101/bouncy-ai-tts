@@ -15,6 +15,11 @@ import {
   recentTurns,
   type TranscriptSegment,
 } from "@shared/interview/liveSession";
+import { extractStreamingFields, type StreamingFields } from "@shared/interview/streamingJson";
+import type { inferRouterOutputs } from "@trpc/server";
+import type { AppRouter } from "../../../server/routers";
+
+type LiveSuggestion = inferRouterOutputs<AppRouter>["interview"]["live"]["suggest"]["suggestion"];
 
 const WS = "user";
 
@@ -376,10 +381,70 @@ async function blobToBase64(blob: Blob): Promise<string> {
   return btoa(binary);
 }
 
+// Stream a suggestion over SSE. Calls onDelta with the progressively-parsed
+// answer text and onFinal with the grounded suggestion. Returns true if a final
+// grounded result arrived; false lets the caller fall back to the batch call.
+async function streamSuggestion(
+  question: string,
+  recent: ReturnType<typeof recentTurns>,
+  onDelta: (fields: StreamingFields) => void,
+  onFinal: (suggestion: LiveSuggestion) => void,
+): Promise<boolean> {
+  const resp = await fetch("/api/interview/live/stream", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ workspaceId: WS, question, recent }),
+  });
+  if (!resp.ok || !resp.body) return false;
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let full = "";
+  let gotFinal = false;
+
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    buffer = buffer.replace(/\r\n/g, "\n"); // tolerate CRLF SSE framing
+    let sep: number;
+    while ((sep = buffer.indexOf("\n\n")) !== -1) {
+      const frame = buffer.slice(0, sep);
+      buffer = buffer.slice(sep + 2);
+      let event = "message";
+      const dataLines: string[] = [];
+      for (const line of frame.split("\n")) {
+        if (line.startsWith("event:")) event = line.slice(6).trim();
+        else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+      }
+      const dataStr = dataLines.join("\n");
+      if (!dataStr) continue;
+      if (event === "error") return gotFinal;
+      let json: { delta?: string; suggestion?: LiveSuggestion };
+      try {
+        json = JSON.parse(dataStr);
+      } catch {
+        continue;
+      }
+      if (event === "final" && json.suggestion) {
+        onFinal(json.suggestion);
+        gotFinal = true;
+      } else if (typeof json.delta === "string") {
+        full += json.delta;
+        onDelta(extractStreamingFields(full));
+      }
+    }
+  }
+  return gotFinal;
+}
+
 function LiveTab() {
   const [consent, setConsent] = useState(false);
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
-  const [suggestion, setSuggestion] = useState<NonNullable<ReturnType<typeof trpc.interview.live.suggest.useMutation>["data"]>["suggestion"] | null>(null);
+  const [suggestion, setSuggestion] = useState<LiveSuggestion | null>(null);
+  const [streamPreview, setStreamPreview] = useState<StreamingFields | null>(null);
   const [status, setStatus] = useState<string>("");
 
   const segmentsRef = useRef<TranscriptSegment[]>([]);
@@ -421,10 +486,28 @@ function LiveTab() {
   const fireSuggest = async (question: string) => {
     inFlightRef.current = true;
     lastSuggestedRef.current = question;
+    setSuggestion(null);
+    setStreamPreview({ directAnswer: "", bullets: [] });
+    const recent = recentTurns(segmentsRef.current);
     try {
-      const res = await suggest.mutateAsync({ workspaceId: WS, question, recent: recentTurns(segmentsRef.current) });
-      setSuggestion(res.suggestion);
+      // Fast path: stream tokens for immediate display; finalize with grounding.
+      const streamed = await streamSuggestion(
+        question,
+        recent,
+        fields => setStreamPreview(fields),
+        final => {
+          setSuggestion(final);
+          setStreamPreview(null);
+        },
+      );
+      if (!streamed) {
+        // Fallback: non-streaming grounded suggestion.
+        const res = await suggest.mutateAsync({ workspaceId: WS, question, recent });
+        setSuggestion(res.suggestion);
+        setStreamPreview(null);
+      }
     } catch {
+      setStreamPreview(null);
       setStatus("Could not get a suggestion. Check that your brief is approved.");
     } finally {
       inFlightRef.current = false;
@@ -452,6 +535,7 @@ function LiveTab() {
     lastSuggestedRef.current = null;
     seqRef.current = 0;
     setSuggestion(null);
+    setStreamPreview(null);
     setStatus("Session cleared.");
   };
 
@@ -518,11 +602,19 @@ function LiveTab() {
         <CardHeader>
           <CardTitle className="text-lg flex items-center gap-2">
             <Radio className="h-5 w-5" /> Suggestion
-            {suggest.isPending ? <Loader2 className="h-4 w-4 animate-spin text-slate-400" /> : null}
+            {suggest.isPending || streamPreview ? <Loader2 className="h-4 w-4 animate-spin text-slate-400" /> : null}
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3 text-sm">
-          {suggestion ? (
+          {!suggestion && streamPreview ? (
+            <div className="space-y-2">
+              <p className="font-medium text-slate-800">{streamPreview.directAnswer || <span className="text-slate-400">…</span>}</p>
+              {streamPreview.bullets.length ? (
+                <ul className="list-disc pl-5 text-slate-600">{streamPreview.bullets.map((b, i) => <li key={i}>{b}</li>)}</ul>
+              ) : null}
+              <p className="text-xs text-slate-400">streaming…</p>
+            </div>
+          ) : suggestion ? (
             <>
               <div className="flex flex-wrap items-center gap-2">
                 <Badge variant={suggestion.confidence === "high" ? "default" : "secondary"}>confidence: {suggestion.confidence}</Badge>

@@ -420,6 +420,79 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   return (await response.json()) as InvokeResult;
 }
 
+export type StreamParams = {
+  messages: Message[];
+  model?: string;
+  maxTokens?: number;
+  responseFormat?: ResponseFormat;
+  outputSchema?: OutputSchema;
+};
+
+// Streams content deltas from the provider as they arrive (OpenAI-compatible
+// SSE). Yields each text fragment; callers accumulate and may parse the full
+// result when the stream ends. Keeps the batch `invokeLLM` untouched for
+// callers that need the whole response.
+export async function* invokeLLMStream(params: StreamParams): AsyncGenerator<string, void, unknown> {
+  assertApiKey();
+
+  const payload: Record<string, unknown> = {
+    messages: params.messages.map(normalizeMessage),
+    stream: true,
+  };
+  if (params.model) payload.model = params.model;
+  if (typeof params.maxTokens === "number") payload.max_tokens = params.maxTokens;
+  const responseFormat = normalizeResponseFormat({
+    responseFormat: params.responseFormat,
+    outputSchema: params.outputSchema,
+  });
+  if (responseFormat) payload.response_format = responseFormat;
+
+  const response = await fetch(resolveApiUrl(), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${ENV.forgeApiKey}`,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok || !response.body) {
+    const errorText = await response.text().catch(() => response.statusText);
+    throw new Error(`LLM stream failed: ${response.status} ${response.statusText} – ${errorText}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    buffer = buffer.replace(/\r\n/g, "\n"); // tolerate CRLF SSE framing
+
+    // SSE frames are separated by a blank line.
+    let sep: number;
+    while ((sep = buffer.indexOf("\n\n")) !== -1) {
+      const frame = buffer.slice(0, sep);
+      buffer = buffer.slice(sep + 2);
+      for (const line of frame.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data:")) continue;
+        const data = trimmed.slice(5).trim();
+        if (data === "[DONE]") return;
+        try {
+          const json = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> };
+          const content = json.choices?.[0]?.delta?.content;
+          if (content) yield content;
+        } catch {
+          // Partial/keep-alive frame; ignore.
+        }
+      }
+    }
+  }
+}
+
 export type ModelInfo = {
   id: string;
   object: string;

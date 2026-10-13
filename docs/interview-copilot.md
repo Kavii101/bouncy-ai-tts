@@ -107,6 +107,13 @@ Interview tab/system audio
   to re-answer with the clearer text, or an **echo** to skip (token-similarity).
 - **Turn context**: recent turns (both sources) are passed to `suggest` so a
   clarification is understood in context.
+- **Token streaming**: `POST /api/interview/live/stream` (SSE) streams the answer
+  token-by-token so the first words appear in a few hundred ms. The client
+  renders the streaming text via a tolerant partial-JSON reader
+  (`shared/interview/streamingJson.ts`, unit-tested) and swaps in the fully
+  **grounded** structured suggestion when the `final` frame arrives — grounding
+  is never traded for speed. Falls back to the batch `live.suggest` if the
+  stream is unavailable.
 - **Consent + control**: a preflight acknowledgement gates capture; a visible
   "Listening" state, Stop, and Clear-session controls are always present.
 
@@ -133,10 +140,11 @@ reuse. See `server/interview/sql-engine.test.ts` for the adversarial cases.
 ## Deferred (see the plan)
 
 File-upload parsing, isolated read-only SQL **execution**/validation, true
-**streaming** STT and **token-streaming** of the suggestion (today each utterance
-is transcribed as one batch chunk, so there is a per-turn delay), the Chrome
-`tabCapture` extension and native desktop capture, provider failover/circuit
-breakers, a storage cleanup worker, and the broad public release of Live assist.
+**streaming STT** (today each utterance is transcribed as one batch chunk after
+the pause, so that transcription step still adds ~1–2s — the suggestion itself
+now streams), the Chrome `tabCapture` extension and native desktop capture,
+provider failover/circuit breakers, a storage cleanup worker, and the broad
+public release of Live assist.
 
 ## Database
 

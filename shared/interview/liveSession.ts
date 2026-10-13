@@ -38,7 +38,7 @@ export type LivePlanConfig = {
 };
 
 export const DEFAULT_LIVE_CONFIG: LivePlanConfig = {
-  pauseMs: 1200,
+  pauseMs: 900,
   turnGapMs: 3500,
   dedupeSimilarity: 0.9,
   refineSimilarity: 0.55,
