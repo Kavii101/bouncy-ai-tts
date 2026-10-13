@@ -1,0 +1,320 @@
+// Interview Copilot router.
+//
+// Mounted at `interview` on the app router. Every procedure is behind the
+// `INTERVIEW_COPILOT_ENABLED` flag (live assist behind its own flag), is
+// workspace-authorized, and maps internal errors to safe, user-facing messages
+// without leaking raw content.
+
+import { TRPCError } from "@trpc/server";
+import { z } from "zod";
+import { ENV } from "../_core/env";
+import { protectedProcedure, publicProcedure, router } from "../_core/trpc";
+import { ensureWorkspaceAccess } from "../db";
+import { extractBrief } from "../interview/extraction";
+import { scoreAnswer, suggestAnswer } from "../interview/answer-engine";
+import { checkReadOnlySql, generateSql } from "../interview/sql-engine";
+import { interviewLog } from "../interview/redaction";
+import {
+  MalformedModelOutput,
+  PRACTICE_CATEGORIES,
+  PROMPT_VERSION,
+  SQL_DIALECTS,
+  briefSchema,
+  type Brief,
+} from "../interview/schemas";
+import * as store from "../interview/store";
+
+const workspaceInput = z.object({ workspaceId: z.string().min(1).max(128).default("user") });
+
+function resolveWorkspace(userId: number, workspaceId: string): string {
+  return workspaceId === "user" ? `user-${userId}` : workspaceId;
+}
+
+function requireEnabled() {
+  if (!ENV.interviewCopilotEnabled) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Interview Copilot is not enabled." });
+  }
+}
+
+function mapError(error: unknown): never {
+  if (error instanceof TRPCError) throw error;
+  if (error instanceof MalformedModelOutput) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "The assistant returned an unexpected format. Try again." });
+  }
+  const message = error instanceof Error ? error.message : "";
+  if (message === "WORKSPACE_FORBIDDEN") {
+    throw new TRPCError({ code: "FORBIDDEN", message: "You do not have access to this workspace." });
+  }
+  if (message === "DATABASE_UNAVAILABLE") {
+    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Storage is temporarily unavailable. Try again." });
+  }
+  if (message.startsWith("SQL_REJECTED:")) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "That SQL is not a single read-only query." });
+  }
+  throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Something went wrong. Try again." });
+}
+
+function parseStoredBrief(briefJson: string): Brief {
+  return briefSchema.parse(JSON.parse(briefJson));
+}
+
+export const interviewRouter = router({
+  // Public so the client can decide whether to render the feature at all.
+  config: publicProcedure.query(() => ({
+    enabled: ENV.interviewCopilotEnabled,
+    liveAssistEnabled: ENV.interviewCopilotEnabled && ENV.interviewLiveAssistEnabled,
+    dialects: SQL_DIALECTS,
+    categories: PRACTICE_CATEGORIES,
+    promptVersion: PROMPT_VERSION,
+  })),
+
+  materials: router({
+    create: protectedProcedure
+      .input(
+        workspaceInput.extend({
+          kind: z.enum(["job_description", "resume", "project", "notes"]),
+          text: z.string().min(1).max(60_000),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        requireEnabled();
+        const workspaceId = resolveWorkspace(ctx.user.id, input.workspaceId);
+        try {
+          await ensureWorkspaceAccess(workspaceId, ctx.user.id);
+          const normalized = input.text.replace(/\r\n/g, "\n").trim();
+          const material = await store.createMaterial({ workspaceId, userId: ctx.user.id, kind: input.kind, normalizedText: normalized });
+          await store.addAudit({ workspaceId, userId: ctx.user.id, event: "material_created", detail: input.kind });
+          interviewLog("material_created", { workspaceId, userId: ctx.user.id, kind: input.kind, charCount: normalized.length });
+          return { materialId: material?.materialId, kind: input.kind, charCount: normalized.length };
+        } catch (error) {
+          mapError(error);
+        }
+      }),
+
+    list: protectedProcedure.input(workspaceInput).query(async ({ ctx, input }) => {
+      requireEnabled();
+      const workspaceId = resolveWorkspace(ctx.user.id, input.workspaceId);
+      try {
+        await ensureWorkspaceAccess(workspaceId, ctx.user.id);
+        return store.listMaterials(workspaceId);
+      } catch (error) {
+        mapError(error);
+      }
+    }),
+
+    delete: protectedProcedure
+      .input(workspaceInput.extend({ materialId: z.string().min(1).max(64) }))
+      .mutation(async ({ ctx, input }) => {
+        requireEnabled();
+        const workspaceId = resolveWorkspace(ctx.user.id, input.workspaceId);
+        try {
+          await ensureWorkspaceAccess(workspaceId, ctx.user.id);
+          await store.deleteMaterial(input.materialId, workspaceId);
+          await store.addAudit({ workspaceId, userId: ctx.user.id, event: "material_deleted" });
+          interviewLog("material_deleted", { workspaceId, userId: ctx.user.id });
+          return { success: true } as const;
+        } catch (error) {
+          mapError(error);
+        }
+      }),
+  }),
+
+  brief: router({
+    generate: protectedProcedure.input(workspaceInput).mutation(async ({ ctx, input }) => {
+      requireEnabled();
+      const workspaceId = resolveWorkspace(ctx.user.id, input.workspaceId);
+      try {
+        await ensureWorkspaceAccess(workspaceId, ctx.user.id);
+        const materials = await store.getActiveMaterialTexts(workspaceId);
+        const byKind = (kind: string) =>
+          materials
+            .filter(m => m.kind === kind && m.normalizedText)
+            .map(m => m.normalizedText as string)
+            .join("\n\n");
+        const jdText = byKind("job_description");
+        const resumeText = byKind("resume");
+        const notesText = [byKind("project"), byKind("notes")].filter(Boolean).join("\n\n");
+        if (!jdText && !resumeText) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Add a job description or resume first." });
+        }
+        const started = Date.now();
+        const { brief, model } = await extractBrief({ jdText, resumeText, notesText: notesText || undefined });
+        await store.upsertBrief({ workspaceId, userId: ctx.user.id, briefJson: JSON.stringify(brief), model, promptVersion: PROMPT_VERSION });
+        await store.addAudit({ workspaceId, userId: ctx.user.id, event: "brief_generated" });
+        interviewLog("brief_generated", {
+          workspaceId,
+          userId: ctx.user.id,
+          model,
+          latencyMs: Date.now() - started,
+          requirements: brief.requirements.length,
+          evidence: brief.evidence.length,
+          questions: brief.questions.length,
+        });
+        return { brief, approved: "draft" as const };
+      } catch (error) {
+        mapError(error);
+      }
+    }),
+
+    get: protectedProcedure.input(workspaceInput).query(async ({ ctx, input }) => {
+      requireEnabled();
+      const workspaceId = resolveWorkspace(ctx.user.id, input.workspaceId);
+      try {
+        await ensureWorkspaceAccess(workspaceId, ctx.user.id);
+        const row = await store.getBrief(workspaceId);
+        if (!row) return null;
+        return { brief: parseStoredBrief(row.briefJson), approved: row.approved, updatedAt: row.updatedAt };
+      } catch (error) {
+        mapError(error);
+      }
+    }),
+
+    approve: protectedProcedure.input(workspaceInput).mutation(async ({ ctx, input }) => {
+      requireEnabled();
+      const workspaceId = resolveWorkspace(ctx.user.id, input.workspaceId);
+      try {
+        await ensureWorkspaceAccess(workspaceId, ctx.user.id);
+        const row = await store.approveBrief(workspaceId);
+        if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "Generate a brief first." });
+        await store.addAudit({ workspaceId, userId: ctx.user.id, event: "brief_approved" });
+        return { approved: row.approved };
+      } catch (error) {
+        mapError(error);
+      }
+    }),
+  }),
+
+  practice: router({
+    // Questions come from the approved brief — nothing unverified is practiced.
+    questions: protectedProcedure.input(workspaceInput).query(async ({ ctx, input }) => {
+      requireEnabled();
+      const workspaceId = resolveWorkspace(ctx.user.id, input.workspaceId);
+      try {
+        await ensureWorkspaceAccess(workspaceId, ctx.user.id);
+        const row = await store.getBrief(workspaceId);
+        if (!row || row.approved !== "approved") return { approved: false as const, questions: [] };
+        return { approved: true as const, questions: parseStoredBrief(row.briefJson).questions };
+      } catch (error) {
+        mapError(error);
+      }
+    }),
+
+    submitAnswer: protectedProcedure
+      .input(
+        workspaceInput.extend({
+          question: z.string().min(1).max(600),
+          category: z.enum(PRACTICE_CATEGORIES),
+          answer: z.string().min(1).max(20_000),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        requireEnabled();
+        const workspaceId = resolveWorkspace(ctx.user.id, input.workspaceId);
+        try {
+          await ensureWorkspaceAccess(workspaceId, ctx.user.id);
+          const row = await store.getBrief(workspaceId);
+          if (!row || row.approved !== "approved") {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Approve your brief before practicing." });
+          }
+          const brief = parseStoredBrief(row.briefJson);
+          const started = Date.now();
+          const { feedback, model } = await scoreAnswer({ question: input.question, category: input.category, answer: input.answer, brief });
+          await store.createPracticeTurn({
+            workspaceId,
+            userId: ctx.user.id,
+            questionText: input.question,
+            category: input.category,
+            answerText: input.answer,
+            feedbackJson: JSON.stringify(feedback),
+            model,
+            promptVersion: PROMPT_VERSION,
+          });
+          interviewLog("practice_scored", { workspaceId, userId: ctx.user.id, category: input.category, model, latencyMs: Date.now() - started });
+          return { feedback };
+        } catch (error) {
+          mapError(error);
+        }
+      }),
+  }),
+
+  sql: router({
+    generate: protectedProcedure
+      .input(
+        workspaceInput.extend({
+          prompt: z.string().min(1).max(8000),
+          dialect: z.enum(SQL_DIALECTS),
+          schema: z.string().max(20_000).optional(),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        requireEnabled();
+        const workspaceId = resolveWorkspace(ctx.user.id, input.workspaceId);
+        try {
+          await ensureWorkspaceAccess(workspaceId, ctx.user.id);
+          const started = Date.now();
+          const { answer, model } = await generateSql({ prompt: input.prompt, dialect: input.dialect, schema: input.schema });
+          // Validation is not executed in the MVP; classify read-only vs not.
+          const safety = checkReadOnlySql(answer.sql);
+          const validationStatus = safety.ok ? "skipped" : "rejected";
+          await store.createSqlCase({
+            workspaceId,
+            userId: ctx.user.id,
+            dialect: input.dialect,
+            promptText: input.prompt,
+            solutionJson: JSON.stringify(answer),
+            validationStatus,
+            model,
+            promptVersion: PROMPT_VERSION,
+          });
+          interviewLog("sql_generated", { workspaceId, userId: ctx.user.id, dialect: input.dialect, model, latencyMs: Date.now() - started, readOnly: safety.ok });
+          return {
+            answer,
+            safety: safety.ok ? { readOnly: true as const } : { readOnly: false as const, reason: safety.reason },
+          };
+        } catch (error) {
+          mapError(error);
+        }
+      }),
+
+    // Pure safety check for user-pasted SQL. No LLM, no execution.
+    check: protectedProcedure
+      .input(workspaceInput.extend({ sql: z.string().min(1).max(20_000) }))
+      .mutation(async ({ ctx, input }) => {
+        requireEnabled();
+        const workspaceId = resolveWorkspace(ctx.user.id, input.workspaceId);
+        try {
+          await ensureWorkspaceAccess(workspaceId, ctx.user.id);
+          const result = checkReadOnlySql(input.sql);
+          return result.ok ? { readOnly: true as const } : { readOnly: false as const, reason: result.reason };
+        } catch (error) {
+          mapError(error);
+        }
+      }),
+  }),
+
+  live: router({
+    // Gated behind its own flag; not wired into the MVP client.
+    suggest: protectedProcedure
+      .input(workspaceInput.extend({ question: z.string().min(1).max(2000) }))
+      .mutation(async ({ ctx, input }) => {
+        requireEnabled();
+        if (!ENV.interviewLiveAssistEnabled) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Live assist is not enabled." });
+        }
+        const workspaceId = resolveWorkspace(ctx.user.id, input.workspaceId);
+        try {
+          await ensureWorkspaceAccess(workspaceId, ctx.user.id);
+          const row = await store.getBrief(workspaceId);
+          if (!row || row.approved !== "approved") {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Approve your brief before using live assist." });
+          }
+          const brief = parseStoredBrief(row.briefJson);
+          const { suggestion, model } = await suggestAnswer({ question: input.question, brief });
+          interviewLog("live_suggested", { workspaceId, userId: ctx.user.id, model, confidence: suggestion.confidence, shouldVerify: suggestion.shouldVerify });
+          return { suggestion };
+        } catch (error) {
+          mapError(error);
+        }
+      }),
+  }),
+});

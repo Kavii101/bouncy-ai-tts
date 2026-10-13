@@ -15,6 +15,13 @@
       "when": 1787931418701,
       "tag": "0001_burly_wasp",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1791874049083,
+      "tag": "0002_chilly_captain_stacy",
+      "breakpoints": true
     }
   ]
 }

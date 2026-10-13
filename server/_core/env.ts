@@ -7,4 +7,10 @@ export const ENV = {
   isProduction: process.env.NODE_ENV === "production",
   forgeApiUrl: process.env.BUILT_IN_FORGE_API_URL ?? "",
   forgeApiKey: process.env.BUILT_IN_FORGE_API_KEY ?? "",
+  // Interview Copilot feature flags. Both default OFF so the feature stays dark
+  // until a deployment explicitly opts in. Live assist has its own flag because,
+  // per the product plan, it must not be reachable until consent, retention, and
+  // deletion controls are complete — enabling the copilot never enables capture.
+  interviewCopilotEnabled: process.env.INTERVIEW_COPILOT_ENABLED === "true",
+  interviewLiveAssistEnabled: process.env.INTERVIEW_LIVE_ASSIST_ENABLED === "true",
 };
