@@ -556,3 +556,85 @@ The feature is ready for controlled release when:
 ## Immediate next engineering action
 
 Create a feature branch from the verified `57fb37aa` baseline, extract the reusable Listen/transcription primitives, add the interview domain schema and feature flag, then implement **Phase 1 only**. Do not enable live interview capture while the material-review, consent, retention, and deletion controls are incomplete.
+
+## 18. Audio-capture strategy and Chrome extension rollout
+
+### 18.1 Capture options
+
+Use a layered strategy rather than making system-audio capture a requirement for the first release:
+
+1. **Typed input** — universal fallback and the safest path when capture is not permitted.
+2. **Microphone capture** — use `getUserMedia({ audio: true })` for practice answers and in-person interviews. It requires HTTPS or localhost and explicit user permission. Browsers provide their own microphone-use indicators. [1]
+3. **Browser tab capture** — use `getDisplayMedia()` when a user explicitly selects an interview tab and audio is available. Audio support varies by browser and selected surface, so the product must verify that an audio track exists and offer typed/microphone fallback. [2]
+4. **Chrome extension tab capture** — use `tabCapture` later if repeated tab-selection friction or reliability problems justify an extension. Chrome requires the `tabCapture` permission and user invocation; the extension can capture the active tab's audio stream. [3]
+5. **Native desktop capture** — defer until there is validated demand for audio from Zoom, Teams, desktop applications, and other non-browser sources. It has the highest implementation, support, and privacy cost.
+6. **Post-interview upload** — support later for detailed coaching when real-time latency is not needed.
+
+### 18.2 Most effective choice by scenario
+
+- **Practice:** microphone-only capture is the most effective first option because the system mainly evaluates the candidate's answer.
+- **Remote browser interview:** microphone plus explicitly selected interview-tab capture is the best balance of coverage, privacy, and implementation effort.
+- **Repeated Chrome-based interviews:** a Chrome extension can improve reliability and reduce repeated screen-share selection, but it should remain optional.
+- **Cross-application interviews:** a native desktop application is technically strongest but is not appropriate for the MVP.
+- **Post-interview coaching:** file upload is the simplest route to higher-quality, non-real-time analysis.
+
+### 18.3 Keep audio sources separate
+
+When remote capture is enabled, preserve separate streams where possible:
+
+```text
+Candidate microphone stream  -> candidate transcript
+Interview tab/system stream  -> interviewer transcript
+Both transcripts             -> question/answer segmentation
+Question plus approved evidence -> grounded suggestion
+```
+
+Do not immediately mix the streams. Separate sources improve speaker attribution, echo handling, debugging, and future diarization. If the MVP must mix streams, retain the original source metadata and clearly document the limitation.
+
+### 18.4 Chrome extension approval and distribution
+
+Chrome approval is **not required for local development**. The team can load an unpacked extension from `chrome://extensions` with Developer mode enabled. This is appropriate for the developer and a small technical test group, but it requires manual installation and is not a polished customer distribution path.
+
+For a controlled beta, use an organization-managed deployment where available or publish an **unlisted** Chrome Web Store item and distribute its direct link. Unlisted distribution still requires meeting Chrome Web Store requirements and passing review; it is not a way to bypass permission or privacy scrutiny.
+
+For broad public installation, publish through the Chrome Web Store. Before submission, prepare:
+
+- minimum required permissions;
+- a clear explanation of why tab-audio access is necessary;
+- privacy policy and data-flow description;
+- explicit capture start/stop behavior;
+- visible active-capture indicator;
+- provider, region, and retention disclosure;
+- deletion controls;
+- no hidden recording, stealth behavior, or unrelated data collection;
+- security review of extension messaging and remote content.
+
+The extension must not start capture merely because the browser starts. Require a deliberate user action, show the active target tab, and make stopping capture possible from both the extension and the web application. Chrome's tab-capture documentation also notes that captured tab audio may stop playing locally unless the extension explicitly routes the stream back to the audio destination, so this behavior must be tested before beta release. [3]
+
+### 18.5 Recommended rollout
+
+**Stage 1 — Web application:** typed input, microphone-only practice, and manual post-recording transcription.
+
+**Stage 2 — Browser capture beta:** explicit `getDisplayMedia()` tab selection, separate microphone/tab streams where possible, and visible source/status controls.
+
+**Stage 3 — Private extension prototype:** unpacked Chrome extension for internal testing only. Measure capture reliability, audio quality, latency, CPU/memory use, meeting-platform compatibility, and user comprehension of permissions.
+
+**Stage 4 — Controlled extension beta:** unlisted distribution or managed deployment after privacy and security review.
+
+**Stage 5 — Public extension:** Chrome Web Store release only after retention, deletion, consent, permission minimization, and abuse-prevention controls are production-ready.
+
+The extension must not be a dependency for the MVP. The preferred product path is:
+
+```text
+Typed input
+  -> microphone capture
+  -> explicit browser tab capture
+  -> optional Chrome extension
+  -> optional native desktop capture
+```
+
+### References
+
+[1]: https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getUserMedia "MDN: MediaDevices.getUserMedia()"
+[2]: https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getDisplayMedia "MDN: MediaDevices.getDisplayMedia()"
+[3]: https://developer.chrome.com/docs/extensions/reference/api/tabCapture "Chrome for Developers: browser.tabCapture API"
