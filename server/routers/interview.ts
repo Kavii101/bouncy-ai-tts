@@ -1,14 +1,16 @@
 // Interview Copilot router.
 //
 // Mounted at `interview` on the app router. Every procedure is behind the
-// `INTERVIEW_COPILOT_ENABLED` flag (live assist behind its own flag), is
-// workspace-authorized, and maps internal errors to safe, user-facing messages
-// without leaking raw content.
+// `INTERVIEW_COPILOT_ENABLED` flag (live assist behind its own flag). By product
+// choice the feature is single-user and requires no login: when a Manus session
+// is present we scope to that user's workspace, otherwise everything shares one
+// local "solo" workspace. Errors map to safe, user-facing messages without
+// leaking raw content.
 
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { ENV } from "../_core/env";
-import { protectedProcedure, publicProcedure, router } from "../_core/trpc";
+import { publicProcedure, router } from "../_core/trpc";
 import { ensureWorkspaceAccess } from "../db";
 import { extractBrief } from "../interview/extraction";
 import { scoreAnswer, suggestAnswer } from "../interview/answer-engine";
@@ -26,8 +28,19 @@ import * as store from "../interview/store";
 
 const workspaceInput = z.object({ workspaceId: z.string().min(1).max(128).default("user") });
 
-function resolveWorkspace(userId: number, workspaceId: string): string {
-  return workspaceId === "user" ? `user-${userId}` : workspaceId;
+type Ctx = { user: { id: number } | null };
+
+// Single-user, no-login by design. If a session is present, scope to that user;
+// otherwise use one shared "solo" workspace and skip the membership check.
+async function resolveWorkspace(ctx: Ctx, inputWorkspaceId: string): Promise<{ workspaceId: string; userId: number }> {
+  const user = ctx.user;
+  if (user) {
+    const workspaceId = inputWorkspaceId === "user" ? `user-${user.id}` : inputWorkspaceId;
+    await ensureWorkspaceAccess(workspaceId, user.id);
+    return { workspaceId, userId: user.id };
+  }
+  const workspaceId = inputWorkspaceId && inputWorkspaceId !== "user" ? inputWorkspaceId : "solo";
+  return { workspaceId, userId: 0 };
 }
 
 function requireEnabled() {
@@ -59,7 +72,6 @@ function parseStoredBrief(briefJson: string): Brief {
 }
 
 export const interviewRouter = router({
-  // Public so the client can decide whether to render the feature at all.
   config: publicProcedure.query(() => ({
     enabled: ENV.interviewCopilotEnabled,
     liveAssistEnabled: ENV.interviewCopilotEnabled && ENV.interviewLiveAssistEnabled,
@@ -69,7 +81,7 @@ export const interviewRouter = router({
   })),
 
   materials: router({
-    create: protectedProcedure
+    create: publicProcedure
       .input(
         workspaceInput.extend({
           kind: z.enum(["job_description", "resume", "project", "notes"]),
@@ -78,40 +90,37 @@ export const interviewRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         requireEnabled();
-        const workspaceId = resolveWorkspace(ctx.user.id, input.workspaceId);
         try {
-          await ensureWorkspaceAccess(workspaceId, ctx.user.id);
+          const { workspaceId, userId } = await resolveWorkspace(ctx, input.workspaceId);
           const normalized = input.text.replace(/\r\n/g, "\n").trim();
-          const material = await store.createMaterial({ workspaceId, userId: ctx.user.id, kind: input.kind, normalizedText: normalized });
-          await store.addAudit({ workspaceId, userId: ctx.user.id, event: "material_created", detail: input.kind });
-          interviewLog("material_created", { workspaceId, userId: ctx.user.id, kind: input.kind, charCount: normalized.length });
+          const material = await store.createMaterial({ workspaceId, userId, kind: input.kind, normalizedText: normalized });
+          await store.addAudit({ workspaceId, userId, event: "material_created", detail: input.kind });
+          interviewLog("material_created", { workspaceId, userId, kind: input.kind, charCount: normalized.length });
           return { materialId: material?.materialId, kind: input.kind, charCount: normalized.length };
         } catch (error) {
           mapError(error);
         }
       }),
 
-    list: protectedProcedure.input(workspaceInput).query(async ({ ctx, input }) => {
+    list: publicProcedure.input(workspaceInput).query(async ({ ctx, input }) => {
       requireEnabled();
-      const workspaceId = resolveWorkspace(ctx.user.id, input.workspaceId);
       try {
-        await ensureWorkspaceAccess(workspaceId, ctx.user.id);
+        const { workspaceId } = await resolveWorkspace(ctx, input.workspaceId);
         return store.listMaterials(workspaceId);
       } catch (error) {
         mapError(error);
       }
     }),
 
-    delete: protectedProcedure
+    delete: publicProcedure
       .input(workspaceInput.extend({ materialId: z.string().min(1).max(64) }))
       .mutation(async ({ ctx, input }) => {
         requireEnabled();
-        const workspaceId = resolveWorkspace(ctx.user.id, input.workspaceId);
         try {
-          await ensureWorkspaceAccess(workspaceId, ctx.user.id);
+          const { workspaceId, userId } = await resolveWorkspace(ctx, input.workspaceId);
           await store.deleteMaterial(input.materialId, workspaceId);
-          await store.addAudit({ workspaceId, userId: ctx.user.id, event: "material_deleted" });
-          interviewLog("material_deleted", { workspaceId, userId: ctx.user.id });
+          await store.addAudit({ workspaceId, userId, event: "material_deleted" });
+          interviewLog("material_deleted", { workspaceId, userId });
           return { success: true } as const;
         } catch (error) {
           mapError(error);
@@ -120,11 +129,10 @@ export const interviewRouter = router({
   }),
 
   brief: router({
-    generate: protectedProcedure.input(workspaceInput).mutation(async ({ ctx, input }) => {
+    generate: publicProcedure.input(workspaceInput).mutation(async ({ ctx, input }) => {
       requireEnabled();
-      const workspaceId = resolveWorkspace(ctx.user.id, input.workspaceId);
       try {
-        await ensureWorkspaceAccess(workspaceId, ctx.user.id);
+        const { workspaceId, userId } = await resolveWorkspace(ctx, input.workspaceId);
         const materials = await store.getActiveMaterialTexts(workspaceId);
         const byKind = (kind: string) =>
           materials
@@ -139,11 +147,11 @@ export const interviewRouter = router({
         }
         const started = Date.now();
         const { brief, model } = await extractBrief({ jdText, resumeText, notesText: notesText || undefined });
-        await store.upsertBrief({ workspaceId, userId: ctx.user.id, briefJson: JSON.stringify(brief), model, promptVersion: PROMPT_VERSION });
-        await store.addAudit({ workspaceId, userId: ctx.user.id, event: "brief_generated" });
+        await store.upsertBrief({ workspaceId, userId, briefJson: JSON.stringify(brief), model, promptVersion: PROMPT_VERSION });
+        await store.addAudit({ workspaceId, userId, event: "brief_generated" });
         interviewLog("brief_generated", {
           workspaceId,
-          userId: ctx.user.id,
+          userId,
           model,
           latencyMs: Date.now() - started,
           requirements: brief.requirements.length,
@@ -156,11 +164,10 @@ export const interviewRouter = router({
       }
     }),
 
-    get: protectedProcedure.input(workspaceInput).query(async ({ ctx, input }) => {
+    get: publicProcedure.input(workspaceInput).query(async ({ ctx, input }) => {
       requireEnabled();
-      const workspaceId = resolveWorkspace(ctx.user.id, input.workspaceId);
       try {
-        await ensureWorkspaceAccess(workspaceId, ctx.user.id);
+        const { workspaceId } = await resolveWorkspace(ctx, input.workspaceId);
         const row = await store.getBrief(workspaceId);
         if (!row) return null;
         return { brief: parseStoredBrief(row.briefJson), approved: row.approved, updatedAt: row.updatedAt };
@@ -169,14 +176,13 @@ export const interviewRouter = router({
       }
     }),
 
-    approve: protectedProcedure.input(workspaceInput).mutation(async ({ ctx, input }) => {
+    approve: publicProcedure.input(workspaceInput).mutation(async ({ ctx, input }) => {
       requireEnabled();
-      const workspaceId = resolveWorkspace(ctx.user.id, input.workspaceId);
       try {
-        await ensureWorkspaceAccess(workspaceId, ctx.user.id);
+        const { workspaceId, userId } = await resolveWorkspace(ctx, input.workspaceId);
         const row = await store.approveBrief(workspaceId);
         if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "Generate a brief first." });
-        await store.addAudit({ workspaceId, userId: ctx.user.id, event: "brief_approved" });
+        await store.addAudit({ workspaceId, userId, event: "brief_approved" });
         return { approved: row.approved };
       } catch (error) {
         mapError(error);
@@ -186,11 +192,10 @@ export const interviewRouter = router({
 
   practice: router({
     // Questions come from the approved brief — nothing unverified is practiced.
-    questions: protectedProcedure.input(workspaceInput).query(async ({ ctx, input }) => {
+    questions: publicProcedure.input(workspaceInput).query(async ({ ctx, input }) => {
       requireEnabled();
-      const workspaceId = resolveWorkspace(ctx.user.id, input.workspaceId);
       try {
-        await ensureWorkspaceAccess(workspaceId, ctx.user.id);
+        const { workspaceId } = await resolveWorkspace(ctx, input.workspaceId);
         const row = await store.getBrief(workspaceId);
         if (!row || row.approved !== "approved") return { approved: false as const, questions: [] };
         return { approved: true as const, questions: parseStoredBrief(row.briefJson).questions };
@@ -199,7 +204,7 @@ export const interviewRouter = router({
       }
     }),
 
-    submitAnswer: protectedProcedure
+    submitAnswer: publicProcedure
       .input(
         workspaceInput.extend({
           question: z.string().min(1).max(600),
@@ -209,9 +214,8 @@ export const interviewRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         requireEnabled();
-        const workspaceId = resolveWorkspace(ctx.user.id, input.workspaceId);
         try {
-          await ensureWorkspaceAccess(workspaceId, ctx.user.id);
+          const { workspaceId, userId } = await resolveWorkspace(ctx, input.workspaceId);
           const row = await store.getBrief(workspaceId);
           if (!row || row.approved !== "approved") {
             throw new TRPCError({ code: "BAD_REQUEST", message: "Approve your brief before practicing." });
@@ -221,7 +225,7 @@ export const interviewRouter = router({
           const { feedback, model } = await scoreAnswer({ question: input.question, category: input.category, answer: input.answer, brief });
           await store.createPracticeTurn({
             workspaceId,
-            userId: ctx.user.id,
+            userId,
             questionText: input.question,
             category: input.category,
             answerText: input.answer,
@@ -229,7 +233,7 @@ export const interviewRouter = router({
             model,
             promptVersion: PROMPT_VERSION,
           });
-          interviewLog("practice_scored", { workspaceId, userId: ctx.user.id, category: input.category, model, latencyMs: Date.now() - started });
+          interviewLog("practice_scored", { workspaceId, userId, category: input.category, model, latencyMs: Date.now() - started });
           return { feedback };
         } catch (error) {
           mapError(error);
@@ -238,7 +242,7 @@ export const interviewRouter = router({
   }),
 
   sql: router({
-    generate: protectedProcedure
+    generate: publicProcedure
       .input(
         workspaceInput.extend({
           prompt: z.string().min(1).max(8000),
@@ -248,9 +252,8 @@ export const interviewRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         requireEnabled();
-        const workspaceId = resolveWorkspace(ctx.user.id, input.workspaceId);
         try {
-          await ensureWorkspaceAccess(workspaceId, ctx.user.id);
+          const { workspaceId, userId } = await resolveWorkspace(ctx, input.workspaceId);
           const started = Date.now();
           const { answer, model } = await generateSql({ prompt: input.prompt, dialect: input.dialect, schema: input.schema });
           // Validation is not executed in the MVP; classify read-only vs not.
@@ -258,7 +261,7 @@ export const interviewRouter = router({
           const validationStatus = safety.ok ? "skipped" : "rejected";
           await store.createSqlCase({
             workspaceId,
-            userId: ctx.user.id,
+            userId,
             dialect: input.dialect,
             promptText: input.prompt,
             solutionJson: JSON.stringify(answer),
@@ -266,7 +269,7 @@ export const interviewRouter = router({
             model,
             promptVersion: PROMPT_VERSION,
           });
-          interviewLog("sql_generated", { workspaceId, userId: ctx.user.id, dialect: input.dialect, model, latencyMs: Date.now() - started, readOnly: safety.ok });
+          interviewLog("sql_generated", { workspaceId, userId, dialect: input.dialect, model, latencyMs: Date.now() - started, readOnly: safety.ok });
           return {
             answer,
             safety: safety.ok ? { readOnly: true as const } : { readOnly: false as const, reason: safety.reason },
@@ -277,13 +280,12 @@ export const interviewRouter = router({
       }),
 
     // Pure safety check for user-pasted SQL. No LLM, no execution.
-    check: protectedProcedure
+    check: publicProcedure
       .input(workspaceInput.extend({ sql: z.string().min(1).max(20_000) }))
       .mutation(async ({ ctx, input }) => {
         requireEnabled();
-        const workspaceId = resolveWorkspace(ctx.user.id, input.workspaceId);
         try {
-          await ensureWorkspaceAccess(workspaceId, ctx.user.id);
+          await resolveWorkspace(ctx, input.workspaceId);
           const result = checkReadOnlySql(input.sql);
           return result.ok ? { readOnly: true as const } : { readOnly: false as const, reason: result.reason };
         } catch (error) {
@@ -294,23 +296,22 @@ export const interviewRouter = router({
 
   live: router({
     // Gated behind its own flag; not wired into the MVP client.
-    suggest: protectedProcedure
+    suggest: publicProcedure
       .input(workspaceInput.extend({ question: z.string().min(1).max(2000) }))
       .mutation(async ({ ctx, input }) => {
         requireEnabled();
         if (!ENV.interviewLiveAssistEnabled) {
           throw new TRPCError({ code: "NOT_FOUND", message: "Live assist is not enabled." });
         }
-        const workspaceId = resolveWorkspace(ctx.user.id, input.workspaceId);
         try {
-          await ensureWorkspaceAccess(workspaceId, ctx.user.id);
+          const { workspaceId, userId } = await resolveWorkspace(ctx, input.workspaceId);
           const row = await store.getBrief(workspaceId);
           if (!row || row.approved !== "approved") {
             throw new TRPCError({ code: "BAD_REQUEST", message: "Approve your brief before using live assist." });
           }
           const brief = parseStoredBrief(row.briefJson);
           const { suggestion, model } = await suggestAnswer({ question: input.question, brief });
-          interviewLog("live_suggested", { workspaceId, userId: ctx.user.id, model, confidence: suggestion.confidence, shouldVerify: suggestion.shouldVerify });
+          interviewLog("live_suggested", { workspaceId, userId, model, confidence: suggestion.confidence, shouldVerify: suggestion.shouldVerify });
           return { suggestion };
         } catch (error) {
           mapError(error);

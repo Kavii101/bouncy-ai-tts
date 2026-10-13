@@ -7,9 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
-import { startLogin } from "@/const";
 
 const WS = "user";
 
@@ -23,10 +21,9 @@ const MATERIAL_KINDS = [
 type MaterialKind = (typeof MATERIAL_KINDS)[number]["value"];
 
 export default function Interview() {
-  const { isAuthenticated, loading } = useAuth();
   const config = trpc.interview.config.useQuery();
 
-  if (config.isLoading || loading) {
+  if (config.isLoading) {
     return <Centered><Loader2 className="h-5 w-5 animate-spin" /> Loading…</Centered>;
   }
   if (!config.data?.enabled) {
@@ -39,21 +36,6 @@ export default function Interview() {
               This feature is behind a flag. Set <code>INTERVIEW_COPILOT_ENABLED=true</code> on the server to enable it.
             </CardDescription>
           </CardHeader>
-        </Card>
-      </Centered>
-    );
-  }
-  if (!isAuthenticated) {
-    return (
-      <Centered>
-        <Card className="max-w-md">
-          <CardHeader>
-            <CardTitle>Sign in to continue</CardTitle>
-            <CardDescription>Your interview workspace is private to your account.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Button onClick={() => startLogin()}>Sign in</Button>
-          </CardContent>
         </Card>
       </Centered>
     );
