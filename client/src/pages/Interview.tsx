@@ -447,14 +447,28 @@ function LiveTab() {
   const [streamPreview, setStreamPreview] = useState<StreamingFields | null>(null);
   const [status, setStatus] = useState<string>("");
 
+  // Interim (in-progress) interviewer transcript from rolling partials.
+  const [interim, setInterimState] = useState("");
+  const interimRef = useRef("");
   const segmentsRef = useRef<TranscriptSegment[]>([]);
   const lastSuggestedRef = useRef<string | null>(null);
   const seqRef = useRef(0);
   const inFlightRef = useRef(false);
+  const partialInFlightRef = useRef(false);
 
   const transcribe = trpc.interview.live.transcribeSegment.useMutation();
   const suggest = trpc.interview.live.suggest.useMutation();
 
+  const setInterim = (text: string) => {
+    interimRef.current = text;
+    setInterimState(text);
+  };
+  const makeSeg = (source: "candidate" | "interviewer", text: string, at: number): TranscriptSegment => ({
+    id: `${source}-${at}-${Math.random().toString(36).slice(2, 7)}`,
+    source,
+    text,
+    at,
+  });
   const addSegment = (seg: TranscriptSegment) => {
     setSegments(prev => {
       const next = [...prev, seg];
@@ -462,24 +476,75 @@ function LiveTab() {
       return next;
     });
   };
+  const updateSegment = (id: string, text: string) => {
+    setSegments(prev => {
+      const next = prev.map(s => (s.id === id ? { ...s, text } : s));
+      segmentsRef.current = next;
+      return next;
+    });
+  };
 
-  const capture = useDualStreamCapture(async u => {
+  const transcribeBlob = async (
+    blob: Blob,
+    source: "candidate" | "interviewer",
+    mimeType: "audio/webm" | "audio/mp4" | "audio/ogg",
+    seq: number,
+    partial: boolean,
+  ): Promise<string> => {
+    const audioBase64 = await blobToBase64(blob);
+    const res = await transcribe.mutateAsync({ workspaceId: WS, source, audioBase64, mimeType, seq, partial });
+    return res.text.trim();
+  };
+
+  // Rolling partial → interim interviewer transcript (drops partials while one
+  // is already in flight so requests never pile up).
+  const handlePartial = async (p: { source: "candidate" | "interviewer"; blob: Blob; mimeType: "audio/webm" | "audio/mp4" | "audio/ogg"; seq: number }) => {
+    if (p.source !== "interviewer" || partialInFlightRef.current) return;
+    partialInFlightRef.current = true;
     try {
-      const audioBase64 = await blobToBase64(u.blob);
-      const res = await transcribe.mutateAsync({
-        workspaceId: WS,
-        source: u.source,
-        audioBase64,
-        mimeType: u.mimeType,
-        seq: seqRef.current++,
-      });
-      if (res.text.trim()) {
-        addSegment({ id: `${u.source}-${u.endedAt}-${Math.random().toString(36).slice(2, 7)}`, source: u.source, text: res.text.trim(), at: u.endedAt });
-      }
+      const text = await transcribeBlob(p.blob, p.source, p.mimeType, p.seq, true);
+      if (text) setInterim(text);
     } catch {
-      setStatus("A segment could not be transcribed. Still listening.");
+      /* partial errors are non-fatal */
+    } finally {
+      partialInFlightRef.current = false;
     }
-  });
+  };
+
+  // End of utterance. For the interviewer we optimistically commit the interim
+  // text immediately (so the planner can fire without waiting for a fresh
+  // transcription), then replace it with the accurate final transcription.
+  const handleFinal = async (u: { source: "candidate" | "interviewer"; blob: Blob; mimeType: "audio/webm" | "audio/mp4" | "audio/ogg"; endedAt: number }) => {
+    if (u.source === "interviewer") {
+      const interimText = interimRef.current;
+      let segId: string | null = null;
+      if (interimText) {
+        const seg = makeSeg("interviewer", interimText, u.endedAt);
+        segId = seg.id;
+        addSegment(seg);
+        setInterim("");
+      }
+      try {
+        const finalText = await transcribeBlob(u.blob, "interviewer", u.mimeType, seqRef.current++, false);
+        if (finalText) {
+          if (segId) updateSegment(segId, finalText);
+          else addSegment(makeSeg("interviewer", finalText, u.endedAt));
+        }
+      } catch {
+        setStatus("A segment could not be transcribed. Still listening.");
+      }
+      return;
+    }
+    // Candidate stream: final only (no partials, not used for suggestions).
+    try {
+      const finalText = await transcribeBlob(u.blob, "candidate", u.mimeType, seqRef.current++, false);
+      if (finalText) addSegment(makeSeg("candidate", finalText, u.endedAt));
+    } catch {
+      /* non-fatal */
+    }
+  };
+
+  const capture = useDualStreamCapture({ onUtterance: handleFinal, onPartial: handlePartial });
 
   const listening = capture.micState === "listening" || capture.tabState === "listening";
 
@@ -534,6 +599,7 @@ function LiveTab() {
     segmentsRef.current = [];
     lastSuggestedRef.current = null;
     seqRef.current = 0;
+    setInterim("");
     setSuggestion(null);
     setStreamPreview(null);
     setStatus("Session cleared.");
@@ -595,7 +661,7 @@ function LiveTab() {
 
       <div className="grid gap-4 lg:grid-cols-2">
         <TranscriptColumn title="You (mic)" source="candidate" segments={segments} />
-        <TranscriptColumn title="Interviewer (tab)" source="interviewer" segments={segments} />
+        <TranscriptColumn title="Interviewer (tab)" source="interviewer" segments={segments} interim={interim} />
       </div>
 
       <Card>
@@ -645,13 +711,15 @@ function LiveTab() {
   );
 }
 
-function TranscriptColumn({ title, source, segments }: { title: string; source: "candidate" | "interviewer"; segments: TranscriptSegment[] }) {
+function TranscriptColumn({ title, source, segments, interim }: { title: string; source: "candidate" | "interviewer"; segments: TranscriptSegment[]; interim?: string }) {
   const rows = segments.filter(s => s.source === source);
   return (
     <Card>
       <CardHeader className="pb-2"><CardTitle className="text-sm text-slate-600">{title}</CardTitle></CardHeader>
       <CardContent className="max-h-56 space-y-1.5 overflow-y-auto text-sm">
-        {rows.length ? rows.map(s => <p key={s.id} className="text-slate-700">{s.text}</p>) : <p className="text-slate-400">—</p>}
+        {rows.map(s => <p key={s.id} className="text-slate-700">{s.text}</p>)}
+        {interim ? <p className="italic text-slate-400">{interim}…</p> : null}
+        {!rows.length && !interim ? <p className="text-slate-400">—</p> : null}
       </CardContent>
     </Card>
   );

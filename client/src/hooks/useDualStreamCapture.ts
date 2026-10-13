@@ -8,21 +8,31 @@ import type { LiveSource } from "@shared/interview/liveSession";
 //   - "interviewer" = the shared interview tab / system audio (getDisplayMedia)
 // so who is speaking is known by construction.
 //
-// Each stream is voice-activity gated: we watch its RMS level and record only
-// while someone is actually speaking, emitting ONE utterance-aligned chunk per
-// turn. That keeps transcription calls aligned to speech (cheaper, more
-// accurate) and gives clean turn boundaries for the suggestion planner.
+// Each stream is voice-activity gated: we record only while someone is speaking
+// and emit ONE utterance-aligned FINAL chunk per turn. During the utterance we
+// also emit rolling PARTIAL chunks (everything from the utterance start to now,
+// which is a valid standalone file because it includes the container header).
+// The caller transcribes partials to show an interim transcript and to act on a
+// question the instant the speaker pauses — no post-pause transcription wait.
 
 export type CaptureState = "off" | "listening" | "error";
 
 type SegmentMime = "audio/webm" | "audio/mp4" | "audio/ogg";
-type Utterance = { source: LiveSource; blob: Blob; mimeType: SegmentMime; endedAt: number };
+export type Utterance = { source: LiveSource; blob: Blob; mimeType: SegmentMime; endedAt: number };
+export type PartialUtterance = { source: LiveSource; blob: Blob; mimeType: SegmentMime; seq: number };
+
+export type CaptureHandlers = {
+  onUtterance: (u: Utterance) => void;
+  onPartial?: (p: PartialUtterance) => void;
+};
 
 const START_RMS = 0.025; // begin an utterance above this level
 const STOP_RMS = 0.015; // end it once we drop below this…
 const SILENCE_MS = 700; // …for this long
 const MIN_UTTERANCE_MS = 350; // drop blips shorter than this
-const MAX_UTTERANCE_MS = 15_000; // hard cap so one long monologue still flushes
+const MAX_UTTERANCE_MS = 20_000; // hard cap so one long monologue still flushes
+const PARTIAL_MS = 1300; // emit a rolling partial at most this often
+const TIMESLICE_MS = 250; // MediaRecorder chunk cadence
 
 function pickMimeType(): string {
   const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"];
@@ -32,22 +42,24 @@ function pickMimeType(): string {
   return "audio/webm";
 }
 
-// Normalize the MediaRecorder mimeType down to the base type the API accepts.
 function baseMime(mimeType: string): SegmentMime {
   if (mimeType.startsWith("audio/mp4")) return "audio/mp4";
   if (mimeType.startsWith("audio/ogg")) return "audio/ogg";
   return "audio/webm";
 }
 
-// Attaches VAD-gated recording to one audio stream. Returns a teardown fn.
+// Attaches VAD-gated recording (with rolling partials) to one audio stream.
+// Returns a teardown fn.
 function gateStream(
   stream: MediaStream,
   source: LiveSource,
   onUtterance: (u: Utterance) => void,
+  onPartial: ((p: PartialUtterance) => void) | undefined,
   onError: (message: string) => void,
 ): () => void {
   const audioOnly = new MediaStream(stream.getAudioTracks());
   const mimeType = pickMimeType();
+  const base = baseMime(mimeType);
 
   const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
   const ctx = new AudioCtx();
@@ -63,6 +75,9 @@ function gateStream(
   let startedAt = 0;
   let belowSince = 0;
   let stopped = false;
+  let partialSeq = 0;
+  let lastPartialAt = 0;
+  let lastPartialChunks = 0;
 
   const flush = () => {
     if (recorder && recorder.state !== "inactive") recorder.stop();
@@ -70,6 +85,9 @@ function gateStream(
 
   const startRecorder = () => {
     chunks = [];
+    partialSeq = 0;
+    lastPartialAt = 0;
+    lastPartialChunks = 0;
     try {
       recorder = new MediaRecorder(audioOnly, { mimeType });
     } catch {
@@ -84,11 +102,23 @@ function gateStream(
       const blob = new Blob(chunks, { type: mimeType });
       chunks = [];
       if (duration >= MIN_UTTERANCE_MS && blob.size > 0) {
-        onUtterance({ source, blob, mimeType: baseMime(mimeType), endedAt });
+        onUtterance({ source, blob, mimeType: base, endedAt });
       }
     };
-    recorder.start();
+    recorder.start(TIMESLICE_MS);
     startedAt = Date.now();
+  };
+
+  const maybeEmitPartial = (now: number) => {
+    if (!onPartial) return;
+    if (now - startedAt < PARTIAL_MS) return;
+    if (now - lastPartialAt < PARTIAL_MS) return;
+    if (chunks.length <= lastPartialChunks || chunks.length === 0) return;
+    lastPartialAt = now;
+    lastPartialChunks = chunks.length;
+    // Snapshot everything so far — valid because chunk[0] carries the header.
+    const blob = new Blob(chunks, { type: mimeType });
+    onPartial({ source, blob, mimeType: base, seq: partialSeq++ });
   };
 
   const rms = (): number => {
@@ -109,6 +139,7 @@ function gateStream(
         startRecorder();
       }
     } else {
+      maybeEmitPartial(now);
       if (now - startedAt >= MAX_UTTERANCE_MS) {
         speaking = false;
         flush();
@@ -145,16 +176,17 @@ function gateStream(
   };
 }
 
-export function useDualStreamCapture(onUtterance: (u: Utterance) => void) {
+export function useDualStreamCapture(handlers: CaptureHandlers) {
   const [micState, setMicState] = useState<CaptureState>("off");
   const [tabState, setTabState] = useState<CaptureState>("off");
   const [error, setError] = useState<string | null>(null);
   const micTeardown = useRef<(() => void) | null>(null);
   const tabTeardown = useRef<(() => void) | null>(null);
-  const onUtteranceRef = useRef(onUtterance);
-  onUtteranceRef.current = onUtterance;
+  const handlersRef = useRef(handlers);
+  handlersRef.current = handlers;
 
-  const emit = useCallback((u: Utterance) => onUtteranceRef.current(u), []);
+  const emitUtterance = useCallback((u: Utterance) => handlersRef.current.onUtterance(u), []);
+  const emitPartial = useCallback((p: PartialUtterance) => handlersRef.current.onPartial?.(p), []);
 
   const startMic = useCallback(async () => {
     setError(null);
@@ -165,7 +197,7 @@ export function useDualStreamCapture(onUtterance: (u: Utterance) => void) {
     }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      micTeardown.current = gateStream(stream, "candidate", emit, msg => {
+      micTeardown.current = gateStream(stream, "candidate", emitUtterance, emitPartial, msg => {
         setMicState("off");
         setError(msg);
       });
@@ -174,7 +206,7 @@ export function useDualStreamCapture(onUtterance: (u: Utterance) => void) {
       setMicState("error");
       setError("Microphone permission was denied. You can still type.");
     }
-  }, [emit]);
+  }, [emitUtterance, emitPartial]);
 
   const startTab = useCallback(async () => {
     setError(null);
@@ -191,9 +223,8 @@ export function useDualStreamCapture(onUtterance: (u: Utterance) => void) {
         setError("No audio was shared. Re-share and enable 'Share tab audio'.");
         return;
       }
-      // We only need the audio; drop the video track immediately.
       stream.getVideoTracks().forEach(t => t.stop());
-      tabTeardown.current = gateStream(stream, "interviewer", emit, msg => {
+      tabTeardown.current = gateStream(stream, "interviewer", emitUtterance, emitPartial, msg => {
         setTabState("off");
         setError(msg);
       });
@@ -202,7 +233,7 @@ export function useDualStreamCapture(onUtterance: (u: Utterance) => void) {
       setTabState("error");
       setError("Tab-audio sharing was cancelled.");
     }
-  }, [emit]);
+  }, [emitUtterance, emitPartial]);
 
   const stop = useCallback(() => {
     micTeardown.current?.();

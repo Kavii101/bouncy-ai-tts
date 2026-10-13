@@ -101,6 +101,15 @@ Interview tab/system audio
 - **VAD-gated capture** (`useDualStreamCapture`): each stream records only while
   someone speaks (RMS threshold + a silence tail), emitting one utterance-aligned
   chunk per turn — fewer transcription calls, cleaner turn boundaries.
+- **Pseudo-streaming STT**: during the interviewer's turn the hook emits rolling
+  *partial* chunks (everything from the utterance start to now — a valid file,
+  since it includes the container header), transcribed to an updating interim
+  transcript. At the pause the interim is **optimistically committed** so the
+  planner fires without waiting for a fresh transcription, then the accurate
+  final transcription replaces it (the planner's `refine` path re-answers if the
+  corrected text differs). Partials are dropped while one is in flight and only
+  run on the interviewer stream. This removes the post-pause transcription wait
+  without needing a provider-native streaming STT model.
 - **The planner** (`shared/interview/liveSession.ts`, pure + unit-tested) decides
   when to answer: it waits for the interviewer's pause, assembles the question
   from the trailing turn, and classifies it as **new**, a **repeat/clarification**
@@ -139,12 +148,13 @@ reuse. See `server/interview/sql-engine.test.ts` for the adversarial cases.
 
 ## Deferred (see the plan)
 
-File-upload parsing, isolated read-only SQL **execution**/validation, true
-**streaming STT** (today each utterance is transcribed as one batch chunk after
-the pause, so that transcription step still adds ~1–2s — the suggestion itself
-now streams), the Chrome `tabCapture` extension and native desktop capture,
-provider failover/circuit breakers, a storage cleanup worker, and the broad
-public release of Live assist.
+File-upload parsing, isolated read-only SQL **execution**/validation,
+**provider-native streaming STT** (the current Forge transcription endpoint uses
+`whisper-1`, which is batch-only; pseudo-streaming above fills the gap. A
+`gpt-4o-transcribe` SSE path could be added if Forge exposes that model and
+honors `stream:true` — unconfirmed), the Chrome `tabCapture` extension and native
+desktop capture, provider failover/circuit breakers, a storage cleanup worker,
+and the broad public release of Live assist.
 
 ## Database
 

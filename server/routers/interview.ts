@@ -318,6 +318,8 @@ export const interviewRouter = router({
           mimeType: z.enum(["audio/webm", "audio/mp4", "audio/ogg", "audio/wav", "audio/mpeg"]),
           language: z.string().max(8).optional(),
           seq: z.number().int().min(0).max(1_000_000),
+          // Rolling partial (interim) transcription vs. the final utterance.
+          partial: z.boolean().optional(),
         }),
       )
       .mutation(async ({ ctx, input }) => {
@@ -336,7 +338,10 @@ export const interviewRouter = router({
             prompt: "Transcribe one short segment of a live job interview accurately.",
           });
           if ("error" in result) throw new Error(result.code);
-          interviewLog("live_segment", { workspaceId, userId, source: input.source, seq: input.seq, charCount: result.text.length });
+          // Only log finals — partials fire several times per turn.
+          if (!input.partial) {
+            interviewLog("live_segment", { workspaceId, userId, source: input.source, seq: input.seq, charCount: result.text.length });
+          }
           return { source: input.source, seq: input.seq, text: result.text, language: result.language };
         } catch (error) {
           const message = error instanceof Error ? error.message : "";
