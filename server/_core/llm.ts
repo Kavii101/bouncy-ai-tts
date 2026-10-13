@@ -465,30 +465,40 @@ export async function* invokeLLMStream(params: StreamParams): AsyncGenerator<str
   const decoder = new TextDecoder();
   let buffer = "";
 
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    buffer = buffer.replace(/\r\n/g, "\n"); // tolerate CRLF SSE framing
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      buffer = buffer.replace(/\r\n/g, "\n"); // tolerate CRLF SSE framing
 
-    // SSE frames are separated by a blank line.
-    let sep: number;
-    while ((sep = buffer.indexOf("\n\n")) !== -1) {
-      const frame = buffer.slice(0, sep);
-      buffer = buffer.slice(sep + 2);
-      for (const line of frame.split("\n")) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data:")) continue;
-        const data = trimmed.slice(5).trim();
-        if (data === "[DONE]") return;
-        try {
-          const json = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> };
-          const content = json.choices?.[0]?.delta?.content;
-          if (content) yield content;
-        } catch {
-          // Partial/keep-alive frame; ignore.
+      // SSE frames are separated by a blank line.
+      let sep: number;
+      while ((sep = buffer.indexOf("\n\n")) !== -1) {
+        const frame = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+        for (const line of frame.split("\n")) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data:")) continue;
+          const data = trimmed.slice(5).trim();
+          if (data === "[DONE]") return;
+          try {
+            const json = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> };
+            const content = json.choices?.[0]?.delta?.content;
+            if (content) yield content;
+          } catch {
+            // Partial/keep-alive frame; ignore.
+          }
         }
       }
+    }
+  } finally {
+    // Release the upstream connection on any exit — including when the consumer
+    // (e.g. a disconnected SSE client) breaks the for-await early.
+    try {
+      await reader.cancel();
+    } catch {
+      /* already closed */
     }
   }
 }

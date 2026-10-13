@@ -101,7 +101,9 @@ function gateStream(
       const duration = endedAt - startedAt;
       const blob = new Blob(chunks, { type: mimeType });
       chunks = [];
-      if (duration >= MIN_UTTERANCE_MS && blob.size > 0) {
+      // Don't emit a trailing utterance when the stop came from teardown (Stop
+      // button / unmount) rather than a real speech pause.
+      if (!stopped && duration >= MIN_UTTERANCE_MS && blob.size > 0) {
         onUtterance({ source, blob, mimeType: base, endedAt });
       }
     };
