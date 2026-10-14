@@ -8,6 +8,7 @@
 // We never trust the model to honor the schema — every response is parsed and
 // re-validated with Zod, and malformed output is rejected with a typed error.
 
+import { stripNulls } from "./strictSchema";
 import { z } from "zod";
 
 // Bump whenever a prompt or contract changes, so stored results are traceable.
@@ -127,14 +128,16 @@ export function parseModelJson<T>(schema: z.ZodType<T>, raw: string): T {
   } catch {
     throw new MalformedModelOutput();
   }
-  const result = schema.safeParse(parsed);
+  // Strict-mode outputs encode "absent" optional fields as null.
+  const result = schema.safeParse(stripNulls(parsed));
   if (!result.success) throw new MalformedModelOutput();
   return result.data;
 }
 
 // --- JSON Schemas for invokeLLM outputSchema -------------------------------
 // Hand-written to match the Zod shapes above. Kept permissive on string
-// lengths (the Zod pass enforces bounds) but strict on structure.
+// lengths (the Zod pass enforces bounds) but strict on structure. Call sites
+// send them through strictOutputSchema() (OpenAI Structured Outputs strict mode).
 
 const stringArray = { type: "array", items: { type: "string" } };
 

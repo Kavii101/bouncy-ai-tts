@@ -6,6 +6,7 @@
 // explicitly marked as untrusted data so instructions embedded in a resume/JD
 // cannot steer the model.
 
+import { strictOutputSchema } from "./strictSchema";
 import { invokeLLM } from "../_core/llm";
 import {
   MalformedModelOutput,
@@ -46,7 +47,7 @@ export async function extractBrief(params: {
       { role: "system", content: SYSTEM_PROMPT },
       { role: "user", content: user },
     ],
-    outputSchema: briefJsonSchema,
+    outputSchema: strictOutputSchema(briefJsonSchema),
     maxTokens: 4000,
   });
 

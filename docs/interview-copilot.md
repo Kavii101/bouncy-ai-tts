@@ -40,6 +40,21 @@ storage hop, so interview audio is never written anywhere. Model/URL resolution
 lives in the pure `server/_core/providerConfig.ts`. Object storage is still
 Forge-only, so the TTS Listen panel's audio playback needs Forge.
 
+Structured outputs are sent in OpenAI **strict** mode
+(`server/interview/strictSchema.ts`): every object is closed and every property
+required, with optional fields made nullable; `parseModelJson` strips the nulls
+before the Zod pass. Without strict mode OpenAI treats the schema as a hint and
+roughly 1 in 4 long briefs failed validation (missing fields, invalid enums).
+
+### Smoke test
+
+`scripts/smoke-interview.ts` runs the whole API flow against a live server with
+real DB + LLM calls, in a throwaway workspace, printing only sizes and flags:
+
+```bash
+BASE_URL=http://localhost:3000 SMOKE_AUDIO=./clip.webm pnpm smoke:interview
+```
+
 The client reads `trpc.interview.config` and renders nothing but an "off"
 notice unless `enabled` is true. The route lives at `/interview`.
 

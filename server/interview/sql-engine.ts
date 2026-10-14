@@ -12,6 +12,7 @@
 // keyword inside a string is not a false positive, and a statement separator
 // inside a string is not a false split), then classifies the remaining code.
 
+import { strictOutputSchema } from "./strictSchema";
 import { invokeLLM } from "../_core/llm";
 import {
   MalformedModelOutput,
@@ -209,7 +210,7 @@ export async function generateSql(params: {
       { role: "system", content: system },
       { role: "user", content: user },
     ],
-    outputSchema: sqlAnswerJsonSchema,
+    outputSchema: strictOutputSchema(sqlAnswerJsonSchema),
     maxTokens: 2000,
   });
 

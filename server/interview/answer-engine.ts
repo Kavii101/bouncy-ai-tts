@@ -3,6 +3,7 @@
 // brief rather than dumping the whole resume/JD, and both run their output
 // through grounding before returning.
 
+import { strictOutputSchema } from "./strictSchema";
 import { invokeLLM } from "../_core/llm";
 import { approvedEvidenceIds, cappedConfidence, groundSuggestion } from "./grounding";
 import {
@@ -55,7 +56,7 @@ export async function scoreAnswer(params: {
       { role: "system", content: system },
       { role: "user", content: user },
     ],
-    outputSchema: answerFeedbackJsonSchema,
+    outputSchema: strictOutputSchema(answerFeedbackJsonSchema),
     maxTokens: 1500,
   });
 
@@ -96,7 +97,7 @@ export function finalizeSuggestion(rawContent: string, brief: Brief): AnswerSugg
   return { ...grounded, confidence: cappedConfidence(grounded) };
 }
 
-export const SUGGEST_SCHEMA = answerSuggestionJsonSchema;
+export const SUGGEST_SCHEMA = strictOutputSchema(answerSuggestionJsonSchema);
 export const SUGGEST_MAX_TOKENS = 1200;
 
 export async function suggestAnswer(params: {
