@@ -186,9 +186,55 @@ order, and treat `deploy/README.md` and `DEPLOYMENT.md` as **outdated**
 `ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes root@141.136.42.226`
 Use **root** (ubuntu@ is refused).
 
+### 🚫 ISOLATION RULE (hard requirement from the owner)
+**Do not touch, modify, stop, restart, or reconfigure any existing app or
+container on the VPS.** This app must be **fully self-contained and new**:
+- Its **own** Docker Compose project and **own** network — do NOT add services to
+  the existing `bai` project or attach to `bai-net`. Read `docker-compose.bai.yml`
+  only to learn conventions and avoid name/port collisions.
+- Its **own** MySQL container inside its own project (don't reuse another app's
+  DB), or a separate managed DB.
+- A **new, unused** host port (check `deploy/PORTS.md`, append your entry — do not
+  repurpose a port another app uses).
+- A **new** nginx server block + **new** domain/subdomain (copy the template to a
+  new file; don't edit another app's server block).
+- Never stop/restart `n8n`, Mongo, or any current container; never edit the shared
+  compose/timer/service files. If something seems to require touching existing
+  infra, STOP and ask the owner instead.
+- Read the host's auto-deploy/timer files for awareness only; this app is deployed
+  **manually** and must not be wired into the monorepo's auto-deploy without the
+  owner's say-so.
+
+### Config that can intertwine — VERIFY each is free before deploying
+Do not assume; check against the live box AND the committed files, then record
+your choices. Nothing below may reuse a value another app holds.
+
+| Thing | Collision risk | How to verify it's free |
+|---|---|---|
+| **Host port** for the app | Another app/container already binds it | `ssh … 'ss -tlnp'` (list listening host ports) **and** read `deploy/PORTS.md`. Pick a port in **neither**. **Avoid 3010** (documented warning). Prefer **≥ 3020**: the app auto-scans 3000–3019 (next point), so staying above that range can't clash with its own scan. Append your chosen port to `PORTS.md`. |
+| **App's internal PORT** | App's `findAvailablePort` scans `PORT`→`PORT+19`; if unset it starts at 3000 and silently walks upward | **Always set `PORT` explicitly** in the container env and map exactly that one container port to your chosen host port. Never let it auto-scan on the host. |
+| **MySQL 3306** | Host already runs a MySQL on 3306 | Keep the app's MySQL **internal only** — don't publish 3306 to the host at all. |
+| **Compose project name** | Clashes with `bai` or another project | `docker compose ls` — pick a new unique name (e.g. `interview-copilot`). |
+| **Docker network name** | Clashes with `bai-net` | `docker network ls` — new unique name (e.g. `interview-copilot-net`). |
+| **Container names** | Clashes with existing containers | `docker ps -a --format '{{.Names}}'` — new unique names. |
+| **nginx `server_name` / domain** | Duplicate server_name silently shadows another vhost | `grep -rn server_name /etc/nginx` — pick a brand-new subdomain, new conf file; don't edit an existing block. |
+| **TLS cert path / webroot** | Overwrites another site's cert | Use the new domain's own cert; don't reuse another site's files. |
+
+Suggested (but still verify free): host port ≥ 3020, project `interview-copilot`,
+network `interview-copilot-net`, containers `interview-copilot-web` /
+`interview-copilot-mysql`, domain e.g. `interview.<your-domain>`. If any is
+taken, pick another — do not displace an existing app.
+
 ### Deploy steps for THIS app
 1. **Build the image off-box** (the VPS is CPU-throttled): build on the Mac/CI and push to a registry the box can pull, or build and `docker save | ssh … docker load`. Don't `docker build` on the VPS.
-2. Add the app to the `bai` compose project on network `bai-net`: the Node app container + a **MySQL** service (or a managed MySQL). Run the Drizzle migration (`pnpm db:push`, or apply `drizzle/0002_*.sql`) against that MySQL. Set the env from Step 1 (provider creds, flags, `DATABASE_URL` pointing at the MySQL **by its Docker network name**, not the host IP — see gotchas).
+2. Stand up a **NEW, isolated** compose project with its **own** network — not
+   `bai`/`bai-net`: the Node app container + its own **MySQL** container (or a
+   managed MySQL). Keep MySQL **internal** (do NOT publish 3306 to the host — the
+   app reaches it by Docker service name on the project's own network, avoiding
+   any host 3306 collision). Run the Drizzle migration (`pnpm db:push`, or apply
+   `drizzle/0002_*.sql`) against that MySQL. Set the env from Step 1
+   (`DATABASE_URL` points at the MySQL **by its Docker service name**, not the
+   host IP — see gotchas).
 3. Pick a **free host port from `deploy/PORTS.md`**, map the app container to it, and **update PORTS.md**.
 4. Add an **nginx server block** on the host (copy `deploy/nginx/app.bountyai.online.conf` to a new domain) that terminates TLS and reverse-proxies to the app's host port. For the SSE route, disable buffering: `location /api/interview/live/stream { proxy_buffering off; proxy_cache off; add_header X-Accel-Buffering no; proxy_pass … }` (the route already sets `X-Accel-Buffering: no`). Reload nginx.
 5. Point the new domain's DNS at the box; issue/renew TLS (per the existing nginx/Let's Encrypt setup on the host).
