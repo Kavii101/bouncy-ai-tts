@@ -151,20 +151,48 @@ Ask the user which option before writing provider code.
 
 Report results; fix every real failure; keep commits small.
 
-## Step 3 — Deploy to the VPS with HTTPS (required!)
+## Step 3 — Deploy to the VPS (real model — read before touching the box)
 
 `getUserMedia`/`getDisplayMedia` only work in a **secure context** — HTTPS (or
-localhost). The VPS MUST serve over TLS or capture silently fails.
+localhost). The VPS MUST serve this app over TLS (the host nginx provides it) or
+capture silently fails.
 
-1. On the VPS: install Node 22 + pnpm, clone the branch, provide the same env (+ a
-   real MySQL), `pnpm install && pnpm db:push && pnpm build && pnpm start` (honors
-   `PORT`).
-2. Put it behind a TLS reverse proxy — **Caddy** is simplest (automatic Let's
-   Encrypt): a `Caddyfile` reverse-proxying your domain to `127.0.0.1:<PORT>`.
-   Ensure SSE isn't buffered (the route sets `X-Accel-Buffering: no`; with nginx
-   also set `proxy_buffering off` for `/api/interview/live/stream`). Keep the app
-   bound to localhost; only the proxy is public.
-3. Re-run the Step 2 checklist against the HTTPS URL in Chrome.
+### Cross-repo reality (important)
+This app (`Kavii101/bouncy-ai-tts`) is a **separate repo** from the monorepo
+whose VPS this is (`BAI-monorepo-Manus`). The box's existing auto-deploy watches
+the **monorepo's** `main`, so it will NOT pick up this repo. You must **add this
+app to the box by hand**: its own container(s) in the `bai` compose project, a
+free host port, its own nginx server block + domain, and its own MySQL. Decide
+with the user whether to also wire an auto-deploy path for it later.
+
+### The deploy references live on the user's Mac (monorepo), not in this repo
+A session running **on the Mac** (with `/Users/primus/Documents/BAI-monorepo-Manus-main/`
+and `~/.claude/.../memory/*.md`) can read them; a cloud/other-machine session
+cannot and must rely on the repo files + the SSH line below. Read these first, in
+order, and treat `deploy/README.md` and `DEPLOYMENT.md` as **outdated**
+(early shared-Atlas setup, old ports) — background only:
+
+1. `~/.claude/projects/-Users-primus-Documents-BAI-monorepo-Manus-main/memory/vps-ssh-root-access.md` — SSH command, key, where the app lives, what the safety check blocks.
+2. `~/.claude/.../memory/vps-auto-deploy-cadence.md` — merge-to-main → live in minutes via a 3-min timer; deploy log + marker locations.
+3. `~/.claude/.../memory/vps-cpu-throttled.md` — 2-core box, already CPU-throttled; **build images off-box** (see PR #287); `deploy/apply-cpu-limits.sh` sets per-container limits.
+4. `~/.claude/.../memory/mongo-on-atlas.md` — MongoDB is on Atlas; the local Mongo container and n8n are gone — **don't restart n8n**. (This app uses MySQL, not Mongo, but know the box state.)
+5. `deploy/PORTS.md` — taken host ports; pick a free one and **update this file**. Note the 3010 warning.
+6. `deploy/DEPLOY-GOTCHAS.md` — the four things that broke the first deploy. Main one: **containers can't reach the host's own public IP — use Docker network names instead.**
+7. `deploy/docker-compose.bai.yml` — compose project `bai`, network `bai-net`, current containers.
+8. `deploy/auto-deploy.sh` (+ `deploy/auto-deploy.service`, `deploy/auto-deploy.timer`) — the deploy script + timer.
+9. `deploy/nginx/app.bountyai.online.conf` — copy this for the new domain. **nginx runs directly on the host, not in Docker, configured by hand.**
+
+### SSH
+`ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes root@141.136.42.226`
+Use **root** (ubuntu@ is refused).
+
+### Deploy steps for THIS app
+1. **Build the image off-box** (the VPS is CPU-throttled): build on the Mac/CI and push to a registry the box can pull, or build and `docker save | ssh … docker load`. Don't `docker build` on the VPS.
+2. Add the app to the `bai` compose project on network `bai-net`: the Node app container + a **MySQL** service (or a managed MySQL). Run the Drizzle migration (`pnpm db:push`, or apply `drizzle/0002_*.sql`) against that MySQL. Set the env from Step 1 (provider creds, flags, `DATABASE_URL` pointing at the MySQL **by its Docker network name**, not the host IP — see gotchas).
+3. Pick a **free host port from `deploy/PORTS.md`**, map the app container to it, and **update PORTS.md**.
+4. Add an **nginx server block** on the host (copy `deploy/nginx/app.bountyai.online.conf` to a new domain) that terminates TLS and reverse-proxies to the app's host port. For the SSE route, disable buffering: `location /api/interview/live/stream { proxy_buffering off; proxy_cache off; add_header X-Accel-Buffering no; proxy_pass … }` (the route already sets `X-Accel-Buffering: no`). Reload nginx.
+5. Point the new domain's DNS at the box; issue/renew TLS (per the existing nginx/Let's Encrypt setup on the host).
+6. Re-run the **Step 2** acceptance checklist against the HTTPS URL in Chrome.
 
 ## Step 4 — Enhancement: cross-device answers channel (phone as teleprompter)
 
