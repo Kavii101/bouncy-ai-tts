@@ -150,7 +150,24 @@ function vitePluginManusDebugCollector(): Plugin {
   };
 }
 
-const plugins = [react(), tailwindcss(), jsxLocPlugin(), vitePluginManusRuntime(), vitePluginManusDebugCollector()];
+// The template's Umami tag uses %VITE_ANALYTICS_*% placeholders that only the
+// Manus host fills. Self-hosted (VPS) builds leave them unset, which made the
+// browser request "/%VITE_ANALYTICS_ENDPOINT%/umami" (400) on every page.
+// Drop the tag unless an endpoint is configured.
+function vitePluginOptionalAnalytics(): Plugin {
+  return {
+    name: "optional-analytics",
+    transformIndexHtml: {
+      order: "pre",
+      handler(html) {
+        if (process.env.VITE_ANALYTICS_ENDPOINT) return html;
+        return html.replace(/\s*<script[^>]*%VITE_ANALYTICS_ENDPOINT%[\s\S]*?<\/script>/, "");
+      },
+    },
+  };
+}
+
+const plugins = [react(), tailwindcss(), jsxLocPlugin(), vitePluginManusRuntime(), vitePluginManusDebugCollector(), vitePluginOptionalAnalytics()];
 
 export default defineConfig({
   plugins,
