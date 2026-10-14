@@ -16,6 +16,7 @@ import { ensureWorkspaceAccess } from "../db";
 import { extractBrief } from "../interview/extraction";
 import { scoreAnswer, suggestAnswer } from "../interview/answer-engine";
 import { checkReadOnlySql, generateSql } from "../interview/sql-engine";
+import { translateSubtitle } from "../interview/translation";
 import { interviewLog } from "../interview/redaction";
 import {
   MalformedModelOutput,
@@ -343,6 +344,33 @@ export const interviewRouter = router({
           if (message === "VOICE_FILE_TOO_LARGE") {
             throw new TRPCError({ code: "BAD_REQUEST", message: "Keep each audio chunk under 16 MB." });
           }
+          mapError(error);
+        }
+      }),
+
+    // Live subtitles: translate one spoken English line for an on-screen caption.
+    // Text only (audio is transcribed by transcribeSegment); nothing is stored.
+    translate: publicProcedure
+      .input(
+        workspaceInput.extend({
+          text: z.string().min(1).max(2000),
+          target: z.enum(["ko"]).default("ko"),
+          context: z.array(z.string().max(2000)).max(3).optional(),
+          partial: z.boolean().optional(),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        requireEnabled();
+        requireLiveAssist();
+        try {
+          const { workspaceId, userId } = await resolveWorkspace(ctx, input.workspaceId);
+          const started = Date.now();
+          const { translation, model } = await translateSubtitle({ text: input.text, target: input.target, context: input.context });
+          if (!input.partial) {
+            interviewLog("live_translated", { workspaceId, userId, model, latencyMs: Date.now() - started, charCount: input.text.length });
+          }
+          return { translation };
+        } catch (error) {
           mapError(error);
         }
       }),

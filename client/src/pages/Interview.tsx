@@ -672,6 +672,13 @@ function LiveTab() {
             <Button variant="outline" size="sm" onClick={() => window.open("/interview/answers", "interview-answers", "noopener")}>
               <ExternalLink className="mr-2 h-4 w-4" /> Open answers window
             </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => window.open("/interview/subtitles?popout=1", "interview-subtitles", "popup,width=1100,height=420")}
+            >
+              <ExternalLink className="mr-2 h-4 w-4" /> Korean subtitles window
+            </Button>
           </div>
           {capture.error ? <ErrorNote message={capture.error} /> : null}
           {status ? <p className="text-xs text-slate-500">{status}</p> : null}
