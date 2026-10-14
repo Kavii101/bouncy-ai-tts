@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ExternalLink, Mic, Minus, Plus, Square, Trash2, Video, VideoOff } from "lucide-react";
+import { ExternalLink, History, Mic, Minus, Plus, Square, Trash2, Video, VideoOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
 import { useDualStreamCapture, type PartialUtterance, type Utterance } from "@/hooks/useDualStreamCapture";
@@ -10,9 +10,16 @@ import { useDualStreamCapture, type PartialUtterance, type Utterance } from "@/h
 // The page never plays audio: the mic is only transcribed, and the optional
 // camera view is video-only and muted, so nothing echoes into the call.
 
-type Line = { id: number; en: string; ko: string | null };
+type Line = { id: number; en: string; ko: string | null; shownAt: number | null };
 
-const MAX_LINES = 4;
+const MAX_LINES = 4; // lines kept in the live view once they've been read
+const MAX_HISTORY = 500;
+
+// Minimum time a caption stays on screen before it may roll off: a base
+// plus reading time for its length (Korean ~ 8 chars/s, generous for viewers).
+export function readTimeMs(ko: string): number {
+  return Math.min(15_000, 3_000 + ko.length * 120);
+}
 
 async function blobToBase64(blob: Blob): Promise<string> {
   const bytes = new Uint8Array(await blob.arrayBuffer());
@@ -26,6 +33,12 @@ async function blobToBase64(blob: Blob): Promise<string> {
 export default function InterviewSubtitles() {
   const popout = new URLSearchParams(window.location.search).has("popout");
   const [lines, setLines] = useState<Line[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), 500);
+    return () => window.clearInterval(t);
+  }, []);
   const [interim, setInterim] = useState<{ en: string; ko: string }>({ en: "", ko: "" });
   const [fontPx, setFontPx] = useState(44);
   const [failure, setFailure] = useState<string | null>(null);
@@ -94,11 +107,11 @@ export default function InterviewSubtitles() {
       const en = await transcribeBlob(u.blob, u.mimeType, false);
       setInterim({ en: "", ko: "" });
       if (!en) return;
-      setLines(prev => [...prev, { id, en, ko: null }].slice(-MAX_LINES));
+      setLines(prev => [...prev, { id, en, ko: null, shownAt: null }].slice(-MAX_HISTORY));
       const context = contextRef.current;
       contextRef.current = [...context, en].slice(-3);
       const res = await translate.mutateAsync({ text: en, context });
-      setLines(prev => prev.map(l => (l.id === id ? { ...l, ko: res?.translation ?? "" } : l)));
+      setLines(prev => prev.map(l => (l.id === id ? { ...l, ko: res?.translation ?? "", shownAt: Date.now() } : l)));
       setFailure(null);
     } catch (error) {
       setFailure(error instanceof Error ? error.message : "Translation failed. Still listening.");
@@ -108,9 +121,16 @@ export default function InterviewSubtitles() {
   const capture = useDualStreamCapture({ onUtterance, onPartial });
   const listening = capture.micState === "listening";
 
+  // Live view: the last few lines, plus any older line not yet on screen long enough to read.
+  const visible = showHistory
+    ? lines
+    : lines.filter(
+        (l, i) => i >= lines.length - MAX_LINES || l.shownAt === null || now - l.shownAt < readTimeMs(l.ko ?? ""),
+      );
+
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ block: "end" });
-  }, [lines, interim]);
+    if (!showHistory) bottomRef.current?.scrollIntoView({ block: "end" });
+  }, [lines, interim, showHistory]);
 
   const openPopout = () => {
     window.open("/interview/subtitles?popout=1", "interview-subtitles", "popup,width=1100,height=420");
@@ -147,6 +167,9 @@ export default function InterviewSubtitles() {
         <Button size="sm" variant="secondary" onClick={() => void toggleCamera()}>
           {camera ? <VideoOff className="mr-1 h-4 w-4" /> : <Video className="mr-1 h-4 w-4" />} Camera
         </Button>
+        <Button size="sm" variant={showHistory ? "default" : "secondary"} onClick={() => setShowHistory(h => !h)}>
+          <History className="mr-1 h-4 w-4" /> History
+        </Button>
         <Button size="sm" variant="secondary" onClick={clear}>
           <Trash2 className="mr-1 h-4 w-4" /> Clear
         </Button>
@@ -166,9 +189,10 @@ export default function InterviewSubtitles() {
           <video ref={videoRef} autoPlay muted playsInline className="h-full max-w-full rounded-lg object-contain" />
         </div>
       )}
-      <div className={`flex flex-col justify-end overflow-hidden px-8 pb-8 ${camera ? "max-h-[45%] shrink-0" : "flex-1"}`}>
-        {lines.map((l, i) => (
-          <div key={l.id} className="mt-4" style={{ opacity: 0.4 + (0.6 * (i + 1)) / lines.length }}>
+      <div className={`flex flex-col ${showHistory ? "overflow-y-auto" : "justify-end overflow-hidden"} px-8 pb-8 ${camera ? "max-h-[45%] shrink-0" : "flex-1"}`}>
+        {showHistory && <div className="mt-auto" />}
+        {visible.map((l, i) => (
+          <div key={l.id} className="mt-4" style={{ opacity: showHistory ? 1 : 0.4 + (0.6 * (i + 1)) / visible.length }}>
             <p className="font-semibold leading-tight" style={{ fontSize: fontPx }}>
               {l.ko ?? <span className="text-white/40">…</span>}
             </p>
