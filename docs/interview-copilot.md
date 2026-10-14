@@ -20,6 +20,26 @@ INTERVIEW_COPILOT_ENABLED=true      # Prepare + Practice + SQL lab
 INTERVIEW_LIVE_ASSIST_ENABLED=true  # adds live.suggest; requires the flag above
 ```
 
+## Provider (LLM + transcription)
+
+The server talks to any OpenAI-compatible provider at `BUILT_IN_FORGE_API_URL`.
+Manus Forge and plain OpenAI both work:
+
+```bash
+BUILT_IN_FORGE_API_URL=https://api.openai.com   # or your Forge URL
+BUILT_IN_FORGE_API_KEY=sk-...
+LLM_MODEL=gpt-4.1-mini            # optional; defaults to gpt-4.1-mini on api.openai.com,
+                                  # provider default elsewhere (Forge picks one)
+TRANSCRIPTION_MODEL=whisper-1     # optional; gpt-4o-transcribe also works (json, no segments)
+```
+
+Transcription (`interview.live.transcribeSegment` and `voice.transcribe`) uses
+`transcribeBytes()` in `server/_core/voiceTranscription.ts`: the audio bytes are
+multipart-POSTed **directly** to `/v1/audio/transcriptions`. There is no object
+storage hop, so interview audio is never written anywhere. Model/URL resolution
+lives in the pure `server/_core/providerConfig.ts`. Object storage is still
+Forge-only, so the TTS Listen panel's audio playback needs Forge.
+
 The client reads `trpc.interview.config` and renders nothing but an "off"
 notice unless `enabled` is true. The route lives at `/interview`.
 
@@ -165,6 +185,8 @@ reuse. See `server/interview/sql-engine.test.ts` for the adversarial cases.
   answer never reaches the database or logs.
 - `interviewLog` / `redact` drop content-bearing keys at any depth before any
   structured log line is written.
+- Live audio chunks are sent straight to the transcription provider and never
+  stored.
 - Material delete nulls the stored text. The managed storage helper still
   exposes no object delete; the MVP is paste-only, so no files are written to
   object storage and nulling the row is the hard delete of the content.
@@ -173,10 +195,9 @@ reuse. See `server/interview/sql-engine.test.ts` for the adversarial cases.
 ## Deferred (see the plan)
 
 File-upload parsing, isolated read-only SQL **execution**/validation,
-**provider-native streaming STT** (the current Forge transcription endpoint uses
-`whisper-1`, which is batch-only; pseudo-streaming above fills the gap. A
-`gpt-4o-transcribe` SSE path could be added if Forge exposes that model and
-honors `stream:true` — unconfirmed), the Chrome `tabCapture` extension and native
+**provider-native streaming STT** (transcription defaults to batch `whisper-1`;
+pseudo-streaming above fills the gap. A `gpt-4o-transcribe` `stream:true` SSE
+path is possible with OpenAI but not built), the Chrome `tabCapture` extension and native
 desktop capture, provider failover/circuit breakers, a storage cleanup worker,
 and the broad public release of Live assist.
 

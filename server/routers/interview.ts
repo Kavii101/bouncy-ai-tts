@@ -7,14 +7,12 @@
 // local "solo" workspace. Errors map to safe, user-facing messages without
 // leaking raw content.
 
-import crypto from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { ENV } from "../_core/env";
 import { publicProcedure, router } from "../_core/trpc";
-import { transcribeAudio } from "../_core/voiceTranscription";
+import { transcribeBytes } from "../_core/voiceTranscription";
 import { ensureWorkspaceAccess } from "../db";
-import { storageGetSignedUrl, storagePut } from "../storage";
 import { extractBrief } from "../interview/extraction";
 import { scoreAnswer, suggestAnswer } from "../interview/answer-engine";
 import { checkReadOnlySql, generateSql } from "../interview/sql-engine";
@@ -329,11 +327,8 @@ export const interviewRouter = router({
           const { workspaceId, userId } = await resolveWorkspace(ctx, input.workspaceId);
           const audio = Buffer.from(input.audioBase64, "base64");
           if (audio.byteLength > 16 * 1024 * 1024) throw new Error("VOICE_FILE_TOO_LARGE");
-          const key = `interview-live/${workspaceId}/${input.source}/${input.seq}-${crypto.randomUUID()}`;
-          const uploaded = await storagePut(key, audio, input.mimeType);
-          const signedUrl = await storageGetSignedUrl(uploaded.key);
-          const result = await transcribeAudio({
-            audioUrl: signedUrl,
+          // Bytes go straight to the provider — never written to storage.
+          const result = await transcribeBytes(audio, input.mimeType, {
             language: input.language,
             prompt: "Transcribe one short segment of a live job interview accurately.",
           });

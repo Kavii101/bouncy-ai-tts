@@ -7,6 +7,10 @@ export const ENV = {
   isProduction: process.env.NODE_ENV === "production",
   forgeApiUrl: process.env.BUILT_IN_FORGE_API_URL ?? "",
   forgeApiKey: process.env.BUILT_IN_FORGE_API_KEY ?? "",
+  // Optional model overrides. Required-ish for plain OpenAI: when unset and the
+  // base URL is api.openai.com, providerConfig picks a sensible default.
+  llmModel: process.env.LLM_MODEL ?? "",
+  transcriptionModel: process.env.TRANSCRIPTION_MODEL ?? "",
   // Interview Copilot feature flags. Both default OFF so the feature stays dark
   // until a deployment explicitly opts in. Live assist has its own flag because,
   // per the product plan, it must not be reachable until consent, retention, and

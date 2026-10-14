@@ -3,8 +3,8 @@
  *
  * Frontend implementation guide:
  * 1. Capture audio using MediaRecorder API
- * 2. Upload audio to storage (e.g., S3) to get URL
- * 3. Call transcription with the URL
+ * 2. Send the bytes to the server (base64 over tRPC)
+ * 3. Server calls transcribeBytes() — direct multipart POST, no storage hop
  * 
  * Example usage:
  * ```tsx
@@ -26,6 +26,7 @@
  * ```
  */
 import { ENV } from "./env";
+import { audioExtensionFor, providerEndpoint, resolveTranscriptionModel } from "./providerConfig";
 
 export type TranscribeOptions = {
   audioUrl: string; // URL to the audio file (e.g., S3 URL)
@@ -64,100 +65,61 @@ export type TranscriptionError = {
   details?: string;
 };
 
+export type TranscribeBytesOptions = {
+  language?: string;
+  prompt?: string;
+};
+
+const MAX_AUDIO_BYTES = 16 * 1024 * 1024;
+
 /**
- * Transcribe audio to text using the internal Speech-to-Text service
- * 
- * @param options - Audio data and metadata
- * @returns Transcription result or error
+ * Transcribe raw audio bytes by multipart-POSTing them straight to
+ * `{BUILT_IN_FORGE_API_URL}/v1/audio/transcriptions`. No object storage, no
+ * signed URL — works with plain OpenAI (Option B) as well as Forge.
  */
-export async function transcribeAudio(
-  options: TranscribeOptions
+export async function transcribeBytes(
+  audio: Buffer | Uint8Array,
+  mimeType: string,
+  options: TranscribeBytesOptions = {}
 ): Promise<TranscriptionResponse | TranscriptionError> {
   try {
-    // Step 1: Validate environment configuration
     if (!ENV.forgeApiUrl) {
-      return {
-        error: "Voice transcription service is not configured",
-        code: "SERVICE_ERROR",
-        details: "BUILT_IN_FORGE_API_URL is not set"
-      };
+      return { error: "Voice transcription service is not configured", code: "SERVICE_ERROR", details: "BUILT_IN_FORGE_API_URL is not set" };
     }
     if (!ENV.forgeApiKey) {
+      return { error: "Voice transcription service authentication is missing", code: "SERVICE_ERROR", details: "BUILT_IN_FORGE_API_KEY is not set" };
+    }
+    if (audio.byteLength > MAX_AUDIO_BYTES) {
       return {
-        error: "Voice transcription service authentication is missing",
-        code: "SERVICE_ERROR",
-        details: "BUILT_IN_FORGE_API_KEY is not set"
+        error: "Audio file exceeds maximum size limit",
+        code: "FILE_TOO_LARGE",
+        details: `File size is ${(audio.byteLength / (1024 * 1024)).toFixed(2)}MB, maximum allowed is 16MB`,
       };
     }
-
-    // Step 2: Download audio from URL
-    let audioBuffer: Buffer;
-    let mimeType: string;
-    try {
-      const response = await fetch(options.audioUrl);
-      if (!response.ok) {
-        return {
-          error: "Failed to download audio file",
-          code: "INVALID_FORMAT",
-          details: `HTTP ${response.status}: ${response.statusText}`
-        };
-      }
-      
-      audioBuffer = Buffer.from(await response.arrayBuffer());
-      mimeType = response.headers.get('content-type') || 'audio/mpeg';
-      
-      // Check file size (16MB limit)
-      const sizeMB = audioBuffer.length / (1024 * 1024);
-      if (sizeMB > 16) {
-        return {
-          error: "Audio file exceeds maximum size limit",
-          code: "FILE_TOO_LARGE",
-          details: `File size is ${sizeMB.toFixed(2)}MB, maximum allowed is 16MB`
-        };
-      }
-    } catch (error) {
-      return {
-        error: "Failed to fetch audio file",
-        code: "SERVICE_ERROR",
-        details: error instanceof Error ? error.message : "Unknown error"
-      };
+    const ext = audioExtensionFor(mimeType);
+    if (!ext) {
+      return { error: "Unsupported audio format", code: "INVALID_FORMAT", details: `MIME type ${mimeType} is not supported` };
     }
 
-    // Step 3: Create FormData for multipart upload to Whisper API
     const formData = new FormData();
-    
-    // Create a Blob from the buffer and append to form
-    const filename = `audio.${getFileExtension(mimeType)}`;
-    const audioBlob = new Blob([new Uint8Array(audioBuffer)], { type: mimeType });
-    formData.append("file", audioBlob, filename);
-    
-    formData.append("model", "whisper-1");
-    formData.append("response_format", "verbose_json");
-    
-    // Add prompt - use custom prompt if provided, otherwise generate based on language
-    const prompt = options.prompt || (
-      options.language 
+    const cleanMime = mimeType.split(";")[0].trim();
+    formData.append("file", new Blob([new Uint8Array(audio)], { type: cleanMime }), `audio.${ext}`);
+    const model = resolveTranscriptionModel(ENV.transcriptionModel);
+    formData.append("model", model);
+    // gpt-4o-*-transcribe models only support json/text; whisper-1 gives us
+    // language + duration via verbose_json.
+    formData.append("response_format", model === "whisper-1" ? "verbose_json" : "json");
+    if (options.language) formData.append("language", options.language);
+    const prompt =
+      options.prompt ||
+      (options.language
         ? `Transcribe the user's voice to text, the user's working language is ${getLanguageName(options.language)}`
-        : "Transcribe the user's voice to text"
-    );
+        : "Transcribe the user's voice to text");
     formData.append("prompt", prompt);
 
-    // Step 4: Call the transcription service
-    const baseUrl = ENV.forgeApiUrl.endsWith("/")
-      ? ENV.forgeApiUrl
-      : `${ENV.forgeApiUrl}/`;
-    
-    const fullUrl = new URL(
-      "v1/audio/transcriptions",
-      baseUrl
-    ).toString();
-
-    const response = await fetch(fullUrl, {
+    const response = await fetch(providerEndpoint(ENV.forgeApiUrl, "v1/audio/transcriptions"), {
       method: "POST",
-      headers: {
-        authorization: `Bearer ${ENV.forgeApiKey}`,
-        "Accept-Encoding": "identity",
-      },
+      headers: { authorization: `Bearer ${ENV.forgeApiKey}`, "Accept-Encoding": "identity" },
       body: formData,
     });
 
@@ -166,50 +128,51 @@ export async function transcribeAudio(
       return {
         error: "Transcription service request failed",
         code: "TRANSCRIPTION_FAILED",
-        details: `${response.status} ${response.statusText}${errorText ? `: ${errorText}` : ""}`
+        details: `${response.status} ${response.statusText}${errorText ? `: ${errorText.slice(0, 500)}` : ""}`,
       };
     }
 
-    // Step 5: Parse and return the transcription result
-    const whisperResponse = await response.json() as WhisperResponse;
-    
-    // Validate response structure
-    if (!whisperResponse.text || typeof whisperResponse.text !== 'string') {
-      return {
-        error: "Invalid transcription response",
-        code: "SERVICE_ERROR",
-        details: "Transcription service returned an invalid response format"
-      };
+    const json = (await response.json()) as Partial<WhisperResponse>;
+    if (typeof json.text !== "string") {
+      return { error: "Invalid transcription response", code: "SERVICE_ERROR", details: "Transcription service returned an invalid response format" };
     }
-
-    return whisperResponse; // Return native Whisper API response directly
-
+    // Silence legitimately transcribes to "" — that's a result, not an error.
+    return {
+      task: "transcribe",
+      language: json.language ?? options.language ?? "",
+      duration: json.duration ?? 0,
+      text: json.text,
+      segments: json.segments ?? [],
+    };
   } catch (error) {
-    // Handle unexpected errors
     return {
       error: "Voice transcription failed",
       code: "SERVICE_ERROR",
-      details: error instanceof Error ? error.message : "An unexpected error occurred"
+      details: error instanceof Error ? error.message : "An unexpected error occurred",
     };
   }
 }
 
 /**
- * Helper function to get file extension from MIME type
+ * Transcribe audio at a URL (legacy Forge storage flow): downloads the file and
+ * delegates to `transcribeBytes`.
  */
-function getFileExtension(mimeType: string): string {
-  const mimeToExt: Record<string, string> = {
-    'audio/webm': 'webm',
-    'audio/mp3': 'mp3',
-    'audio/mpeg': 'mp3',
-    'audio/wav': 'wav',
-    'audio/wave': 'wav',
-    'audio/ogg': 'ogg',
-    'audio/m4a': 'm4a',
-    'audio/mp4': 'm4a',
-  };
-  
-  return mimeToExt[mimeType] || 'audio';
+export async function transcribeAudio(
+  options: TranscribeOptions
+): Promise<TranscriptionResponse | TranscriptionError> {
+  let audioBuffer: Buffer;
+  let mimeType: string;
+  try {
+    const response = await fetch(options.audioUrl);
+    if (!response.ok) {
+      return { error: "Failed to download audio file", code: "INVALID_FORMAT", details: `HTTP ${response.status}: ${response.statusText}` };
+    }
+    audioBuffer = Buffer.from(await response.arrayBuffer());
+    mimeType = response.headers.get("content-type") || "audio/mpeg";
+  } catch (error) {
+    return { error: "Failed to fetch audio file", code: "SERVICE_ERROR", details: error instanceof Error ? error.message : "Unknown error" };
+  }
+  return transcribeBytes(audioBuffer, mimeType, { language: options.language, prompt: options.prompt });
 }
 
 /**

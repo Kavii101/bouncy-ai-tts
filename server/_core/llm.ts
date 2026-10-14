@@ -1,4 +1,5 @@
 import { ENV } from "./env";
+import { resolveChatModel } from "./providerConfig";
 
 export type Role = "system" | "user" | "assistant" | "tool" | "function";
 
@@ -362,8 +363,9 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     messages: messages.map(normalizeMessage),
   };
 
-  if (model) {
-    payload.model = model;
+  const resolvedModel = resolveChatModel({ requested: model, envModel: ENV.llmModel, apiUrl: resolveApiUrl() });
+  if (resolvedModel) {
+    payload.model = resolvedModel;
   }
 
   if (tools && tools.length > 0) {
@@ -439,7 +441,8 @@ export async function* invokeLLMStream(params: StreamParams): AsyncGenerator<str
     messages: params.messages.map(normalizeMessage),
     stream: true,
   };
-  if (params.model) payload.model = params.model;
+  const resolvedModel = resolveChatModel({ requested: params.model, envModel: ENV.llmModel, apiUrl: resolveApiUrl() });
+  if (resolvedModel) payload.model = resolvedModel;
   if (typeof params.maxTokens === "number") payload.max_tokens = params.maxTokens;
   const responseFormat = normalizeResponseFormat({
     responseFormat: params.responseFormat,
