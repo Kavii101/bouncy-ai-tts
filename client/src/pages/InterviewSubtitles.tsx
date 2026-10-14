@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ExternalLink, Mic, Minus, Plus, Square, Trash2 } from "lucide-react";
+import { ExternalLink, Mic, Minus, Plus, Square, Trash2, Video, VideoOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
 import { useDualStreamCapture, type PartialUtterance, type Utterance } from "@/hooks/useDualStreamCapture";
@@ -7,6 +7,8 @@ import { useDualStreamCapture, type PartialUtterance, type Utterance } from "@/h
 // Live subtitles: your mic → English transcript → polite Korean caption.
 // Meant to be opened as a pop-out window and shared in Teams / Google Meet
 // ("share window"), so it works the same on any meeting platform.
+// The page never plays audio: the mic is only transcribed, and the optional
+// camera view is video-only and muted, so nothing echoes into the call.
 
 type Line = { id: number; en: string; ko: string | null };
 
@@ -38,6 +40,22 @@ export default function InterviewSubtitles() {
   const partialBusyRef = useRef(false);
   const contextRef = useRef<string[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [camera, setCamera] = useState<MediaStream | null>(null);
+
+  useEffect(() => {
+    if (videoRef.current) videoRef.current.srcObject = camera;
+    return () => camera?.getTracks().forEach(t => t.stop());
+  }, [camera]);
+
+  const toggleCamera = async () => {
+    if (camera) return setCamera(null);
+    try {
+      setCamera(await navigator.mediaDevices.getUserMedia({ video: true, audio: false }));
+    } catch {
+      setFailure("Camera permission was denied.");
+    }
+  };
 
   const transcribeBlob = async (blob: Blob, mimeType: Utterance["mimeType"], partial: boolean) => {
     const res = await transcribe.mutateAsync({
@@ -126,6 +144,9 @@ export default function InterviewSubtitles() {
         <Button size="sm" variant="secondary" onClick={() => setFontPx(f => Math.min(96, f + 6))} aria-label="Larger text">
           <Plus className="h-4 w-4" />
         </Button>
+        <Button size="sm" variant="secondary" onClick={() => void toggleCamera()}>
+          {camera ? <VideoOff className="mr-1 h-4 w-4" /> : <Video className="mr-1 h-4 w-4" />} Camera
+        </Button>
         <Button size="sm" variant="secondary" onClick={clear}>
           <Trash2 className="mr-1 h-4 w-4" /> Clear
         </Button>
@@ -140,7 +161,12 @@ export default function InterviewSubtitles() {
       </div>
       {(capture.error || failure) && <div className="bg-red-900/60 px-4 py-1 text-sm">{capture.error ?? failure}</div>}
 
-      <div className="flex flex-1 flex-col justify-end overflow-hidden px-8 pb-8">
+      {camera && (
+        <div className="flex min-h-0 flex-1 justify-center bg-black pt-4">
+          <video ref={videoRef} autoPlay muted playsInline className="h-full max-w-full rounded-lg object-contain" />
+        </div>
+      )}
+      <div className={`flex flex-col justify-end overflow-hidden px-8 pb-8 ${camera ? "max-h-[45%] shrink-0" : "flex-1"}`}>
         {lines.map((l, i) => (
           <div key={l.id} className="mt-4" style={{ opacity: 0.4 + (0.6 * (i + 1)) / lines.length }}>
             <p className="font-semibold leading-tight" style={{ fontSize: fontPx }}>
