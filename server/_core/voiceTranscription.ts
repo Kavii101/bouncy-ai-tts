@@ -72,6 +72,71 @@ export type TranscribeBytesOptions = {
 
 const MAX_AUDIO_BYTES = 16 * 1024 * 1024;
 
+// Known Whisper/ASR hallucination artifacts. Models like whisper-1 invent these
+// training-data phrases when they hear silence, breath, or room noise (the
+// classic "thanks for watching / subscribe / www….com" captions). We only drop
+// a transcript when, after removing these, nothing substantive is left — so a
+// real sentence that merely *contains* a URL is never discarded.
+const HALLUCINATION_PATTERNS: RegExp[] = [
+  /thank(s| you)?( you)? for watching/gi,
+  /please (like and )?subscribe/gi,
+  /don'?t forget to (like,? ?)?subscribe/gi,
+  /subscribe to (our|the|my|this) channel/gi,
+  /\bsubscribe\b/gi,
+  /like,? comment,? and subscribe/gi,
+  /see you (next time|in the next (video|one))/gi,
+  /for more (information|info),?\s*(please )?visit/gi,
+  /\bwww\.[^\s]+/gi,
+  /https?:\/\/[^\s]+/gi,
+  /\bfema\.gov\b/gi,
+  /subtitles?( are)? (by|provided by|created by)/gi,
+  /transcribed by/gi,
+  /amara\.org/gi,
+  /©|\ball rights reserved\b/gi,
+];
+
+// Whisper verbose segments expose per-segment confidence. These thresholds are
+// OpenAI's own documented hallucination signals: a segment that is almost
+// certainly non-speech, very low average log-probability, or highly repetitive
+// (compression ratio) is dropped.
+function filterLowConfidenceSegments(segments: WhisperSegment[]): { text: string; segments: WhisperSegment[] } {
+  const kept = segments.filter(
+    s =>
+      !(typeof s.no_speech_prob === "number" && s.no_speech_prob > 0.6 && typeof s.avg_logprob === "number" && s.avg_logprob < -1) &&
+      !(typeof s.compression_ratio === "number" && s.compression_ratio > 2.4),
+  );
+  return { text: kept.map(s => s.text).join("").trim(), segments: kept };
+}
+
+// True when the text is only hallucination artifacts (nothing meaningful left
+// once the known junk phrases are stripped). Empty strings are handled by the
+// caller as legitimate silence, so they are not treated as hallucinations here.
+function isPureHallucination(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  let residual = trimmed;
+  for (const re of HALLUCINATION_PATTERNS) residual = residual.replace(re, " ");
+  // Strip ASCII punctuation/whitespace/control but keep alphanumerics and any
+  // non-ASCII letters (accented Latin, CJK, Arabic, …) so non-English speech is
+  // never mistaken for junk. Avoids \p{} unicode escapes (needs a newer target).
+  const substantive = residual.replace(/[^A-Za-z0-9À-￿]/g, "");
+  return substantive.length < 3;
+}
+
+// Apply segment-confidence filtering (whisper verbose) then the artifact check.
+// Returns the cleaned text and the surviving segments.
+function scrubTranscript(text: string, segments: WhisperSegment[]): { text: string; segments: WhisperSegment[] } {
+  let outText = text;
+  let outSegments = segments;
+  if (segments.length > 0) {
+    const filtered = filterLowConfidenceSegments(segments);
+    outSegments = filtered.segments;
+    outText = filtered.text;
+  }
+  if (isPureHallucination(outText)) return { text: "", segments: [] };
+  return { text: outText, segments: outSegments };
+}
+
 /**
  * Transcribe raw audio bytes by multipart-POSTing them straight to
  * `{BUILT_IN_FORGE_API_URL}/v1/audio/transcriptions`. No object storage, no
@@ -116,6 +181,11 @@ export async function transcribeBytes(
         ? `Transcribe the user's voice to text, the user's working language is ${getLanguageName(options.language)}`
         : "Transcribe the user's voice to text");
     formData.append("prompt", prompt);
+    // temperature=0 makes decoding deterministic and reduces invented text.
+    // Only whisper-1 documents this parameter on the transcription endpoint;
+    // the gpt-4o-*-transcribe models are already low-temperature by default and
+    // can reject unknown params, so we scope it to whisper-1.
+    if (model === "whisper-1") formData.append("temperature", "0");
 
     const response = await fetch(providerEndpoint(ENV.forgeApiUrl, "v1/audio/transcriptions"), {
       method: "POST",
@@ -136,13 +206,15 @@ export async function transcribeBytes(
     if (typeof json.text !== "string") {
       return { error: "Invalid transcription response", code: "SERVICE_ERROR", details: "Transcription service returned an invalid response format" };
     }
-    // Silence legitimately transcribes to "" — that's a result, not an error.
+    // Drop silence/noise hallucinations before returning. Silence legitimately
+    // transcribes to "" — that's a result, not an error.
+    const scrubbed = scrubTranscript(json.text, json.segments ?? []);
     return {
       task: "transcribe",
       language: json.language ?? options.language ?? "",
       duration: json.duration ?? 0,
-      text: json.text,
-      segments: json.segments ?? [],
+      text: scrubbed.text,
+      segments: scrubbed.segments,
     };
   } catch (error) {
     return {

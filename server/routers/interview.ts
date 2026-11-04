@@ -14,9 +14,11 @@ import { publicProcedure, router } from "../_core/trpc";
 import { transcribeBytes } from "../_core/voiceTranscription";
 import { ensureWorkspaceAccess } from "../db";
 import { extractBrief } from "../interview/extraction";
+import { detectLanguage } from "../interview/language";
 import { scoreAnswer, suggestAnswer } from "../interview/answer-engine";
 import { checkReadOnlySql, generateSql } from "../interview/sql-engine";
 import { translateSubtitle } from "../interview/translation";
+import { generateCueDeck } from "../interview/presentation";
 import { interviewLog } from "../interview/redaction";
 import {
   MalformedModelOutput,
@@ -93,7 +95,7 @@ export const interviewRouter = router({
       .input(
         workspaceInput.extend({
           kind: z.enum(["job_description", "resume", "project", "notes"]),
-          text: z.string().min(1).max(60_000),
+          text: z.string().min(1).max(500_000),
         }),
       )
       .mutation(async ({ ctx, input }) => {
@@ -212,6 +214,42 @@ export const interviewRouter = router({
       }
     }),
 
+    // Voice practice: transcribe one spoken answer. Copilot flag only (no
+    // live-assist flag, no login) so solo practice works end to end. Bytes go
+    // straight to the provider; nothing is stored.
+    transcribe: publicProcedure
+      .input(
+        workspaceInput.extend({
+          audioBase64: z.string().min(16).max(22_000_000),
+          mimeType: z.enum(["audio/webm", "audio/mp4", "audio/ogg", "audio/wav", "audio/mpeg"]),
+          language: z.string().max(8).optional(),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        requireEnabled();
+        try {
+          const { workspaceId, userId } = await resolveWorkspace(ctx, input.workspaceId);
+          const audio = Buffer.from(input.audioBase64, "base64");
+          if (audio.byteLength > 16 * 1024 * 1024) throw new Error("VOICE_FILE_TOO_LARGE");
+          const result = await transcribeBytes(audio, input.mimeType, {
+            language: input.language,
+            prompt:
+              "This is a candidate answering an interview practice question aloud. " +
+              "Transcribe the clearly spoken words verbatim, preserving technical and business terms. " +
+              "If there is no clear speech, return nothing rather than guessing.",
+          });
+          if ("error" in result) throw new Error(result.code);
+          interviewLog("practice_transcribed", { workspaceId, userId, charCount: result.text.length });
+          return { text: result.text };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "";
+          if (message === "VOICE_FILE_TOO_LARGE") {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Keep each recording under 16 MB." });
+          }
+          mapError(error);
+        }
+      }),
+
     submitAnswer: publicProcedure
       .input(
         workspaceInput.extend({
@@ -302,6 +340,31 @@ export const interviewRouter = router({
       }),
   }),
 
+  present: router({
+    // Presentation prompter: script -> cue cards. No capture, so it needs only
+    // the copilot flag, not live assist. Nothing is stored server-side.
+    generate: publicProcedure
+      .input(
+        workspaceInput.extend({
+          title: z.string().max(200).optional(),
+          script: z.string().min(1).max(60_000),
+          targetMinutes: z.number().int().min(1).max(180).optional(),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        requireEnabled();
+        try {
+          const { workspaceId, userId } = await resolveWorkspace(ctx, input.workspaceId);
+          const started = Date.now();
+          const { deck, model, source } = await generateCueDeck({ title: input.title, script: input.script, targetMinutes: input.targetMinutes });
+          interviewLog("present_generated", { workspaceId, userId, model, source, latencyMs: Date.now() - started, cues: deck.cues.length, charCount: input.script.length });
+          return { deck, source };
+        } catch (error) {
+          mapError(error);
+        }
+      }),
+  }),
+
   live: router({
     // Both procedures are gated behind INTERVIEW_LIVE_ASSIST_ENABLED.
 
@@ -331,14 +394,25 @@ export const interviewRouter = router({
           // Bytes go straight to the provider — never written to storage.
           const result = await transcribeBytes(audio, input.mimeType, {
             language: input.language,
-            prompt: "Transcribe one short segment of a live job interview accurately.",
+            // Domain + anti-hallucination prompt. Naming the setting and the kind
+            // of speech biases the model toward real interview vocabulary and
+            // clearly-spoken accented English, and discourages filling silence
+            // with invented text.
+            prompt:
+              "This is one short segment of a real job interview between an interviewer and a candidate. " +
+              "Transcribe the clearly spoken words verbatim, preserving technical, business, and data terms. " +
+              "If there is no clear speech, return nothing rather than guessing.",
           });
           if ("error" in result) throw new Error(result.code);
-          // Only log finals — partials fire several times per turn.
+          // Detect the spoken language from the text (gpt-4o-transcribe returns
+          // no language label). Used only for a UI badge; answers stay English.
+          const detected = detectLanguage(result.text);
+          // Only log finals — partials fire several times per turn. Language code
+          // is non-sensitive; the transcript text itself is never logged.
           if (!input.partial) {
-            interviewLog("live_segment", { workspaceId, userId, source: input.source, seq: input.seq, charCount: result.text.length });
+            interviewLog("live_segment", { workspaceId, userId, source: input.source, seq: input.seq, charCount: result.text.length, language: detected.code });
           }
-          return { source: input.source, seq: input.seq, text: result.text, language: result.language };
+          return { source: input.source, seq: input.seq, text: result.text, language: detected.code, languageLabel: detected.label };
         } catch (error) {
           const message = error instanceof Error ? error.message : "";
           if (message === "VOICE_FILE_TOO_LARGE") {

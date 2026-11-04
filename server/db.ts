@@ -1,10 +1,11 @@
 import { and, desc, eq, gt, inArray, sql } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/mysql2";
+import { drizzle } from "drizzle-orm/better-sqlite3";
+import Database from "better-sqlite3";
 import { InsertUser, ttsArtifacts, ttsJobs, ttsUsageQuotas, ttsVoiceSettings, ttsWorkspaceMembers, ttsWorkspaces, users } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 
 let _db: ReturnType<typeof drizzle> | null = null;
-export async function getDb() { if (!_db && process.env.DATABASE_URL) { try { _db = drizzle(process.env.DATABASE_URL); } catch (error) { console.warn("[Database] Failed to connect:", error); _db = null; } } return _db; }
+export async function getDb() { if (!_db && process.env.DATABASE_URL) { try { _db = drizzle(new Database(process.env.DATABASE_URL)); } catch (error) { console.warn("[Database] Failed to connect:", error); _db = null; } } return _db; }
 
 export async function upsertUser(user: InsertUser): Promise<void> {
   if (!user.openId) throw new Error("User openId is required for upsert");
@@ -15,7 +16,7 @@ export async function upsertUser(user: InsertUser): Promise<void> {
   if (user.lastSignedIn !== undefined) { values.lastSignedIn = user.lastSignedIn; updateSet.lastSignedIn = user.lastSignedIn; }
   if (user.role !== undefined) { values.role = user.role; updateSet.role = user.role; } else if (user.openId === ENV.ownerOpenId) { values.role = "admin"; updateSet.role = "admin"; }
   values.lastSignedIn ??= new Date(); updateSet.lastSignedIn ??= new Date();
-  await db.insert(users).values(values).onDuplicateKeyUpdate({ set: updateSet });
+  await db.insert(users).values(values).onConflictDoUpdate({ target: users.openId, set: updateSet });
 }
 export async function getUserByOpenId(openId: string) { const db = await getDb(); if (!db) return undefined; const rows = await db.select().from(users).where(eq(users.openId, openId)).limit(1); return rows[0]; }
 
@@ -24,8 +25,8 @@ export async function ensureWorkspaceAccess(workspaceId: string, userId: number)
   const membership = await db.select().from(ttsWorkspaceMembers).where(and(eq(ttsWorkspaceMembers.workspaceId, workspaceId), eq(ttsWorkspaceMembers.userId, userId))).limit(1);
   if (membership[0]) return membership[0];
   if (workspaceId !== `user-${userId}`) throw new Error("WORKSPACE_FORBIDDEN");
-  await db.insert(ttsWorkspaces).values({ workspaceId, displayName: "Personal workspace", ownerUserId: userId }).onDuplicateKeyUpdate({ set: { updatedAt: new Date() } });
-  await db.insert(ttsWorkspaceMembers).values({ workspaceId, userId, role: "owner" }).onDuplicateKeyUpdate({ set: { role: "owner" } });
+  await db.insert(ttsWorkspaces).values({ workspaceId, displayName: "Personal workspace", ownerUserId: userId }).onConflictDoUpdate({ target: ttsWorkspaces.workspaceId, set: { updatedAt: new Date() } });
+  await db.insert(ttsWorkspaceMembers).values({ workspaceId, userId, role: "owner" }).onConflictDoUpdate({ target: [ttsWorkspaceMembers.workspaceId, ttsWorkspaceMembers.userId], set: { role: "owner" } });
   return { workspaceId, userId, role: "owner" as const };
 }
 
@@ -41,4 +42,4 @@ export async function getOrCreateQuota(workspaceId: string) { const db = await g
 export async function countActiveJobs(workspaceId: string) { const db = await getDb(); if (!db) throw new Error("DATABASE_UNAVAILABLE"); const rows = await db.select({ count: sql<number>`count(*)` }).from(ttsJobs).where(and(eq(ttsJobs.workspaceId, workspaceId), inArray(ttsJobs.status, ["queued", "processing"]))); return Number(rows[0]?.count ?? 0); }
 export async function consumeQuota(workspaceId: string, characters: number) { const db = await getDb(); if (!db) throw new Error("DATABASE_UNAVAILABLE"); const quota = await getOrCreateQuota(workspaceId); if (quota.charactersUsed + characters > quota.characterLimit) throw new Error("QUOTA_EXCEEDED"); await db.update(ttsUsageQuotas).set({ charactersUsed: sql`${ttsUsageQuotas.charactersUsed} + ${characters}` }).where(eq(ttsUsageQuotas.id, quota.id)); }
 export async function listRecentJobs(workspaceId: string) { const db = await getDb(); if (!db) return []; return db.select().from(ttsJobs).where(eq(ttsJobs.workspaceId, workspaceId)).orderBy(desc(ttsJobs.createdAt)).limit(20); }
-export async function saveVoiceSettings(values: typeof ttsVoiceSettings.$inferInsert) { const db = await getDb(); if (!db) throw new Error("DATABASE_UNAVAILABLE"); await db.insert(ttsVoiceSettings).values(values).onDuplicateKeyUpdate({ set: { languageCode: values.languageCode, voiceId: values.voiceId, speed: values.speed, updatedAt: new Date() } }); }
+export async function saveVoiceSettings(values: typeof ttsVoiceSettings.$inferInsert) { const db = await getDb(); if (!db) throw new Error("DATABASE_UNAVAILABLE"); await db.insert(ttsVoiceSettings).values(values).onConflictDoUpdate({ target: [ttsVoiceSettings.workspaceId, ttsVoiceSettings.userId], set: { languageCode: values.languageCode, voiceId: values.voiceId, speed: values.speed, updatedAt: new Date() } }); }

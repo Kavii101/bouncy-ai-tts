@@ -66,6 +66,7 @@ notice unless `enabled` is true. The route lives at `/interview`.
 | **Practice** | Typed (mic reuses the existing `voice.transcribe`) | Rubric feedback on an answer; flags unsupported claims |
 | **SQL lab** | Typed | Generates a solution + explanation and classifies it read-only |
 | **Live assist** | Gated, off | Short grounded suggestion from the approved brief |
+| **Present** | Paste only, no mic | Script/slide notes → cue cards (say, transition, seconds) on a full-screen prompter |
 
 ## tRPC procedures
 
@@ -85,6 +86,7 @@ workspace) and gated by `INTERVIEW_COPILOT_ENABLED`.
 | `interview.practice.submitAnswer` | Protected | Rubric feedback; stores the answer as a hash only |
 | `interview.sql.generate` | Protected | Structured SQL answer + read-only safety classification |
 | `interview.sql.check` | Protected | Pure read-only safety check for user-pasted SQL (no LLM, no execution) |
+| `interview.present.generate` | Copilot flag | Script/slide notes → cue-card deck (`llm` or local-chunker fallback); nothing stored |
 | `interview.live.transcribeSegment` | 2nd flag | Transcribe one utterance chunk from one stream (`candidate` or `interviewer`) |
 | `interview.live.suggest` | 2nd flag | Grounded live suggestion, with recent turns as context |
 
@@ -185,6 +187,28 @@ Scope: same browser (a second window or monitor — the usual teleprompter setup
 A different *device* would need a server-backed channel (SSE/WebSocket); that is
 the documented upgrade path.
 
+## Present — presentation prompter
+
+The Present tab at `/interview` turns a pasted talk script or slide notes into
+cue cards (`interview.present.generate`, strict-schema LLM with a deterministic
+local-chunker fallback that only splits the speaker's own words). Cards carry a
+title, the words to say, a transition line, and a seconds budget, optionally
+rescaled to a target talk length. The full-screen prompter at
+`/interview/present` shows the current cue large, the next cue small, elapsed
+vs. budget timing, and progress. Advance with Space/ArrowRight, screen-edge
+clicks, or the control tab; both windows sync through the same localStorage
+channel pattern as Answers (`shared/interview/presentChannel.ts`, unit-tested).
+Nothing is stored server-side in card mode.
+
+**Live Scroll** (in the prompter) is the speech-following mode: the presenter's
+mic is transcribed in rolling chunks and each transcript is aligned against the
+script word stream (`shared/interview/scrollFollow.ts`, unit-tested LCS
+alignment over a forward window). The scroll moves to the sentence being
+spoken, holds when speech stops, jumps when the speaker skips ahead, and —
+when speech matches nothing — flags off-course and offers a bridge line back
+to the missed point. Any sentence can be clicked to jump manually. Audio is
+transcribed via `interview.live.transcribeSegment` and never stored.
+
 ## SQL safety
 
 The MVP **never executes SQL**. `checkReadOnlySql` tokenizes a query (stripping
@@ -209,7 +233,7 @@ reuse. See `server/interview/sql-engine.test.ts` for the adversarial cases.
 
 ## Deferred (see the plan)
 
-File-upload parsing, isolated read-only SQL **execution**/validation,
+PDF file-upload parsing (Setup accepts paste and client-side .md/.txt upload today; files are read as text in the browser and sent through the same materials API), isolated read-only SQL **execution**/validation,
 **provider-native streaming STT** (transcription defaults to batch `whisper-1`;
 pseudo-streaming above fills the gap. A `gpt-4o-transcribe` `stream:true` SSE
 path is possible with OpenAI but not built), the Chrome `tabCapture` extension and native

@@ -181,6 +181,7 @@ function gateStream(
 export function useDualStreamCapture(handlers: CaptureHandlers) {
   const [micState, setMicState] = useState<CaptureState>("off");
   const [tabState, setTabState] = useState<CaptureState>("off");
+  const [tabStream, setTabStream] = useState<MediaStream | null>(null);
   const [error, setError] = useState<string | null>(null);
   const micTeardown = useRef<(() => void) | null>(null);
   const tabTeardown = useRef<(() => void) | null>(null);
@@ -225,9 +226,12 @@ export function useDualStreamCapture(handlers: CaptureHandlers) {
         setError("No audio was shared. Re-share and enable 'Share tab audio'.");
         return;
       }
-      stream.getVideoTracks().forEach(t => t.stop());
+      // Keep the video track: the Live stage previews the shared interview
+      // tab so the candidate can see the interviewer while reading cues.
+      setTabStream(stream.getVideoTracks().length ? stream : null);
       tabTeardown.current = gateStream(stream, "interviewer", emitUtterance, emitPartial, msg => {
         setTabState("off");
+        setTabStream(null);
         setError(msg);
       });
       setTabState("listening");
@@ -242,11 +246,12 @@ export function useDualStreamCapture(handlers: CaptureHandlers) {
     tabTeardown.current?.();
     micTeardown.current = null;
     tabTeardown.current = null;
+    setTabStream(null);
     setMicState("off");
     setTabState("off");
   }, []);
 
   useEffect(() => () => stop(), [stop]);
 
-  return { micState, tabState, error, startMic, startTab, stop };
+  return { micState, tabState, tabStream, error, startMic, startTab, stop };
 }

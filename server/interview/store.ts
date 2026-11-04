@@ -118,7 +118,8 @@ export async function upsertBrief(input: {
       model: input.model,
       promptVersion: input.promptVersion,
     })
-    .onDuplicateKeyUpdate({
+    .onConflictDoUpdate({
+      target: interviewBriefs.workspaceId,
       set: {
         briefJson: input.briefJson,
         approved: "draft",

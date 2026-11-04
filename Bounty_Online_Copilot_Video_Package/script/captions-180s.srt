@@ -1,0 +1,51 @@
+1
+00:00:00,000 --> 00:00:12,000
+You can know your work and still struggle to explain it when the question comes. I'm Kavodel, and I built Bounty Online co-pilot to help people prepare around their own experience.
+
+2
+00:00:12,000 --> 00:00:30,000
+Start with your CV and the job description. The assistant connects what the role needs to the examples you have supplied. When something is missing, that should stay visible.
+
+3
+00:00:30,000 --> 00:00:45,000
+Every requirement is linked to evidence from the résumé. Gaps are flagged, never invented — and nothing downstream uses the brief until you approve it.
+
+4
+00:00:45,000 --> 00:00:55,000
+Practice out loud. The question is read to you, you answer by voice, and the feedback tells you exactly what to strengthen.
+
+5
+00:00:55,000 --> 00:01:10,000
+Interviewer: Tell me about a time stakeholders disagreed about an important metric. How did you reach a decision?
+
+6
+00:01:10,000 --> 00:01:25,000
+A short cue, drawn only from your approved evidence — so you can start speaking immediately, in your own words.
+
+7
+00:01:25,000 --> 00:01:45,000
+Candidate: Product and finance were using different revenue definitions. We agreed the decision owner for each metric, and published a single model the dashboards now use. — Interviewer: What changed after that decision, and how did you know it worked?
+
+8
+00:01:45,000 --> 00:01:55,000
+When your profile has nothing, it says so — and offers a truthful bridge instead of inventing one.
+
+9
+00:01:55,000 --> 00:02:15,000
+Here is what to carry into your next practice — saved as your next action.
+
+10
+00:02:15,000 --> 00:02:35,000
+The same co-pilot turns your script into a teleprompter that follows your voice, holds when you pause, and bridges you back when you wander.
+
+11
+00:02:35,000 --> 00:02:45,000
+The reports nobody reads become voiceovers people actually finish.
+
+12
+00:02:45,000 --> 00:02:55,000
+I used Meta's Muse Code to help build the application.
+
+13
+00:02:55,000 --> 00:03:00,000
+Bounty Online co-pilot. Bring your experience into the moment.

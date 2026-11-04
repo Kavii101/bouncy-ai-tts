@@ -120,6 +120,25 @@ export const sqlAnswerSchema = z.object({
 
 export type SqlAnswer = z.infer<typeof sqlAnswerSchema>;
 
+// --- Presentation cue cards --------------------------------------------------
+
+export const presentationCueSchema = z.object({
+  id: z.string().min(1).max(32),
+  title: z.string().min(1).max(120),
+  say: z.string().min(1).max(2000),
+  transition: z.string().max(400),
+  seconds: z.number().int().min(5).max(3600),
+  notes: z.string().max(600),
+});
+
+export const presentationDeckSchema = z.object({
+  title: z.string().min(1).max(200),
+  cues: z.array(presentationCueSchema).min(1).max(60),
+  totalSeconds: z.number().int().min(0).max(7200),
+});
+
+export type PresentationDeckOutput = z.infer<typeof presentationDeckSchema>;
+
 // Parse + validate model output, throwing a typed error on any mismatch.
 export function parseModelJson<T>(schema: z.ZodType<T>, raw: string): T {
   let parsed: unknown;
@@ -269,6 +288,33 @@ export const sqlAnswerJsonSchema = {
       warnings: stringArray,
     },
     required: ["dialect", "sql", "explanation", "assumptions", "schemaUsed", "edgeCases", "warnings"],
+  },
+} as const;
+
+export const presentationDeckJsonSchema = {
+  name: "presentation_cue_deck",
+  schema: {
+    type: "object",
+    properties: {
+      title: { type: "string" },
+      cues: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "string" },
+            title: { type: "string" },
+            say: { type: "string" },
+            transition: { type: "string" },
+            seconds: { type: "integer" },
+            notes: { type: "string" },
+          },
+          required: ["id", "title", "say", "transition", "seconds", "notes"],
+        },
+      },
+      totalSeconds: { type: "integer" },
+    },
+    required: ["title", "cues", "totalSeconds"],
   },
 } as const;
 

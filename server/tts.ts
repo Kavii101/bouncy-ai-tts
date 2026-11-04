@@ -3,10 +3,10 @@ import { ENV } from "./_core/env";
 
 export const TTS_LANGUAGES = ["en-US", "en-GB", "en-IN", "fr-FR", "es-ES", "de-DE"] as const;
 export const TTS_VOICES = [
+  { id: "Aoede", label: "Aoede · Natural and warm (recommended)", languages: TTS_LANGUAGES },
+  { id: "Achird", label: "Achird · Friendly", languages: TTS_LANGUAGES },
   { id: "Charon", label: "Charon · Informative", languages: TTS_LANGUAGES },
   { id: "Kore", label: "Kore · Firm", languages: TTS_LANGUAGES },
-  { id: "Aoede", label: "Aoede · Breezy", languages: TTS_LANGUAGES },
-  { id: "Achird", label: "Achird · Friendly", languages: TTS_LANGUAGES },
 ] as const;
 export const TTS_SPEEDS = [0.75, 1, 1.25, 1.5] as const;
 export const MAX_TTS_CHARS = Number(process.env.TTS_MAX_CHARS ?? 5000);

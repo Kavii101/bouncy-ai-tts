@@ -20,6 +20,8 @@ export type TranscriptSegment = {
   text: string;
   /** Epoch ms when this chunk's audio ended. */
   at: number;
+  /** Human-readable detected language label (e.g. "Spanish"); "" / undefined for English or unknown. */
+  language?: string;
 };
 
 export type SuggestionPlan =

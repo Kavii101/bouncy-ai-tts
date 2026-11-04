@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ExternalLink, History, Mic, Minus, Plus, Square, Trash2, Video, VideoOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Walkthrough, useWalkthrough } from "@/components/Walkthrough";
 import { trpc } from "@/lib/trpc";
 import { useDualStreamCapture, type PartialUtterance, type Utterance } from "@/hooks/useDualStreamCapture";
 
@@ -31,6 +32,7 @@ async function blobToBase64(blob: Blob): Promise<string> {
 }
 
 export default function InterviewSubtitles() {
+  const tour = useWalkthrough("subtitles", true);
   const popout = new URLSearchParams(window.location.search).has("popout");
   const [lines, setLines] = useState<Line[]>([]);
   const [showHistory, setShowHistory] = useState(false);
@@ -143,7 +145,7 @@ export default function InterviewSubtitles() {
   };
 
   return (
-    <div className="group flex h-screen flex-col bg-black text-white">
+    <div className="stage group flex h-screen flex-col">
       <div
         className={`flex flex-wrap items-center gap-2 border-b border-white/10 px-4 py-2 text-sm transition-opacity ${
           popout && listening ? "opacity-0 group-hover:opacity-100" : ""
@@ -170,6 +172,7 @@ export default function InterviewSubtitles() {
         <Button size="sm" variant={showHistory ? "default" : "secondary"} onClick={() => setShowHistory(h => !h)}>
           <History className="mr-1 h-4 w-4" /> History
         </Button>
+        <Button size="sm" variant="secondary" onClick={tour.start}>Help</Button>
         <Button size="sm" variant="secondary" onClick={clear}>
           <Trash2 className="mr-1 h-4 w-4" /> Clear
         </Button>
@@ -213,6 +216,10 @@ export default function InterviewSubtitles() {
         )}
         <div ref={bottomRef} />
       </div>
+      <Walkthrough dark open={tour.open} onClose={tour.close} steps={[
+        { kicker: "Subtitles", title: "Captions for any meeting app", body: "Share this window in Teams or Meet, then press Start subtitles. Your English speech becomes Korean captions your audience can follow." },
+        { kicker: "Controls", title: "Make it readable", body: "Use A− / A+ for text size, Camera for an optional muted video view, and History to scroll back. Nothing you say is played back or stored." },
+      ]} />
     </div>
   );
-}
+}  

@@ -8,6 +8,8 @@ import Home from "./pages/Home";
 import Interview from "./pages/Interview";
 import InterviewAnswers from "./pages/InterviewAnswers";
 import InterviewSubtitles from "./pages/InterviewSubtitles";
+import Present from "./pages/Present";
+import BrandReview from "./pages/BrandReview";
 
 function Router() {
   // make sure to consider if you need authentication for certain routes
@@ -17,6 +19,8 @@ function Router() {
       <Route path={"/interview"} component={Interview} />
       <Route path={"/interview/answers"} component={InterviewAnswers} />
       <Route path={"/interview/subtitles"} component={InterviewSubtitles} />
+      <Route path={"/interview/present"} component={Present} />
+      <Route path={"/brand"} component={BrandReview} />
       <Route path={"/404"} component={NotFound} />
       {/* Final fallback route */}
       <Route component={NotFound} />

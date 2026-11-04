@@ -55,4 +55,38 @@ describe("transcribeBytes", () => {
     const result = await transcribeBytes(Buffer.from("x"), "audio/webm");
     expect(result).toMatchObject({ code: "TRANSCRIPTION_FAILED" });
   });
+
+  it("drops pure silence/noise hallucinations (FEMA / subscribe / thanks-for-watching)", async () => {
+    for (const junk of [
+      "For more information visit www.FEMA.gov",
+      "Thanks for watching! Please subscribe.",
+      "Subscribe to our channel",
+    ]) {
+      vi.stubGlobal("fetch", vi.fn(async () => okResponse({ text: junk })));
+      const result = await transcribeBytes(Buffer.from("x"), "audio/webm");
+      expect(result).toMatchObject({ text: "" });
+    }
+  });
+
+  it("keeps a real sentence even if it contains a URL", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => okResponse({ text: "My portfolio is at www.jane.dev and I led the migration." })));
+    const result = await transcribeBytes(Buffer.from("x"), "audio/webm");
+    expect(result).toMatchObject({ text: "My portfolio is at www.jane.dev and I led the migration." });
+  });
+
+  it("drops whisper segments flagged as non-speech by confidence signals", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        okResponse({
+          text: " you",
+          language: "english",
+          duration: 2,
+          segments: [{ id: 0, seek: 0, start: 0, end: 2, text: " you", tokens: [], temperature: 0, avg_logprob: -1.5, compression_ratio: 1, no_speech_prob: 0.9 }],
+        }),
+      ),
+    );
+    const result = await transcribeBytes(Buffer.from("x"), "audio/webm");
+    expect(result).toMatchObject({ text: "" });
+  });
 });

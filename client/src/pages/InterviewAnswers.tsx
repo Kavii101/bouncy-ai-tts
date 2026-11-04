@@ -1,3 +1,5 @@
+import { EmptyStage, LiveDot } from "@/components/brand";
+import { Walkthrough, useWalkthrough } from "@/components/Walkthrough";
 import { trpc } from "@/lib/trpc";
 import { useAnswersReceiver } from "@/hooks/useAnswersChannel";
 import type { AnswerEntry } from "@shared/interview/liveChannel";
@@ -6,6 +8,7 @@ import type { AnswerEntry } from "@shared/interview/liveChannel";
 // It never captures audio — the Live tab (control window) drives it over a
 // cross-window localStorage channel. Big, calm, high-contrast.
 export default function InterviewAnswers() {
+  const tour = useWalkthrough("answers");
   const config = trpc.interview.config.useQuery();
   const state = useAnswersReceiver();
 
@@ -26,14 +29,12 @@ export default function InterviewAnswers() {
   const { current, history, listening } = state;
 
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-100">
+    <main className="stage min-h-screen">
       <div className="mx-auto max-w-3xl px-5 py-6">
         <header className="mb-5 flex items-center justify-between border-b border-slate-800 pb-3">
           <h1 className="text-lg font-semibold tracking-tight">Answers</h1>
-          <span className={`flex items-center gap-2 text-xs ${listening ? "text-emerald-400" : "text-slate-500"}`}>
-            <span className={`inline-block h-2.5 w-2.5 rounded-full ${listening ? "animate-pulse bg-emerald-400" : "bg-slate-600"}`} />
-            {listening ? "Listening" : "Idle — start the Live tab"}
-          </span>
+          <button type="button" onClick={tour.start} className="ml-3 text-xs font-medium text-slate-400 underline-offset-4 transition hover:text-white hover:underline">How it works</button>
+          <LiveDot live={listening} label={listening ? "Listening" : "Idle — start the Live tab"} />
         </header>
 
         {/* Current answer — the big, glanceable script */}
@@ -41,12 +42,14 @@ export default function InterviewAnswers() {
           {current ? (
             <CurrentAnswer entry={current} />
           ) : (
-            <div className="flex min-h-[40vh] flex-col items-center justify-center text-center text-slate-500">
-              <p className="text-xl">{listening ? "Listening — waiting for the first question." : "Waiting for the control window."}</p>
-              <p className="mt-2 text-sm">Open the Interview Copilot → Live tab and start listening. Answers appear here.</p>
-            </div>
+            <EmptyStage dark title={listening ? "Listening — waiting for the first question." : "Waiting for the control window."} body="Open the Interview Copilot → Live tab and start listening. Answers appear here." />
           )}
         </section>
+
+      <Walkthrough dark open={tour.open} onClose={tour.close} steps={[
+        { kicker: "Answers", title: "Your teleprompter for the interview", body: "This window only listens to the control tab — it never captures audio. Keep it on a second screen where only you can see it, and only where assistive tools are permitted." },
+        { kicker: "Reading it", title: "Start with the bold line, then the bullets", body: "The big line is your opening sentence. The bullets are supporting points. Anything marked verify is not in your approved evidence — do not state it as fact." },
+      ]} />
 
         {history.length ? (
           <section className="mt-8">
@@ -68,11 +71,11 @@ export default function InterviewAnswers() {
 
 function CurrentAnswer({ entry }: { entry: AnswerEntry }) {
   return (
-    <div>
+    <div className="cue-in">
       {entry.question ? <p className="mb-3 text-base text-slate-400">{entry.question}</p> : null}
 
       <div className="flex flex-wrap items-center gap-2">
-        {entry.streaming ? <span className="text-xs text-indigo-400">generating…</span> : null}
+        {entry.streaming ? <span className="text-xs text-emerald-400">generating…</span> : null}
         {!entry.streaming ? <ConfidencePill confidence={entry.confidence} /> : null}
         {entry.shouldVerify && !entry.streaming ? (
           <span className="rounded bg-amber-500/20 px-2 py-0.5 text-xs font-medium text-amber-300">verify before stating as fact</span>
@@ -87,7 +90,7 @@ function CurrentAnswer({ entry }: { entry: AnswerEntry }) {
         <ul className="mt-5 space-y-3">
           {entry.bullets.map((b, i) => (
             <li key={i} className="flex gap-3 text-lg leading-snug text-slate-100 md:text-xl">
-              <span className="mt-1 text-indigo-400">▸</span>
+              <span className="mt-1 text-emerald-400">▸</span>
               <span>{b}</span>
             </li>
           ))}
@@ -125,5 +128,5 @@ function ConfidencePill({ confidence }: { confidence: "high" | "medium" | "low" 
 }
 
 function Shell({ children }: { children: React.ReactNode }) {
-  return <main className="flex min-h-screen items-center justify-center bg-slate-950 p-6 text-slate-100">{children}</main>;
+  return <main className="stage flex min-h-screen items-center justify-center p-6">{children}</main>;
 }
