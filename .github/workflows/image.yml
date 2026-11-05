@@ -30,3 +30,15 @@ jobs:
             ghcr.io/kavii101/interview-copilot:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      # The VPS cannot pull this private package and must not have its shared
+      # ghcr.io login replaced, so the image also ships as a downloadable tar.
+      - name: Export image tar
+        run: |
+          docker pull ghcr.io/kavii101/interview-copilot:${{ github.sha }}
+          docker save ghcr.io/kavii101/interview-copilot:${{ github.sha }} | gzip -1 > image.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-${{ github.sha }}
+          path: image.tar.gz
+          retention-days: 14
+          compression-level: 0

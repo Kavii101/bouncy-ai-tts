@@ -1,4 +1,4 @@
-# Interview Copilot image. Built off-box (GitHub Actions -> GHCR); the VPS only pulls.
+# Interview Copilot image. Built off-box (GitHub Actions); the VPS never builds.
 FROM node:22-bookworm-slim AS build
 WORKDIR /app
 RUN corepack enable
@@ -11,12 +11,12 @@ RUN pnpm build
 FROM node:22-bookworm-slim
 WORKDIR /app
 ENV NODE_ENV=production
-RUN corepack enable
-# Full node_modules (incl. drizzle-kit) so the same image can run migrations.
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/package.json ./
+# drizzle/sqlite is applied at startup when MIGRATE_ON_BOOT=true.
 COPY --from=build /app/drizzle ./drizzle
-COPY --from=build /app/drizzle.config.ts ./
+# SQLite lives here. A named volume mounted at /data inherits this ownership.
+RUN mkdir -p /data && chown node:node /data
 USER node
 CMD ["node", "dist/index.js"]

@@ -1,66 +1,47 @@
-# Interview Copilot on the VPS. Fully isolated from the monorepo's `bai` project:
-# own project name, own network, own MySQL (not published to the host).
-# Usage (on the VPS, in this directory, with .env next to this file):
-#   docker compose -p interview-copilot pull
-#   docker compose -p interview-copilot run --rm migrate
-#   docker compose -p interview-copilot up -d web
+# Interview Copilot on the VPS. Fully isolated from every other stack on the box:
+# own project, network, volume and loopback port. One container; SQLite on a volume.
+#
+# The image is loaded from a tar (docker load), never pulled: the box's ghcr.io
+# login belongs to another project and cannot read this package, and replacing
+# that login would break the other project's deploys. See deploy/interview-copilot/README.md.
 name: interview-copilot
 
 services:
-  mysql:
-    image: mysql:8.4
-    container_name: interview-copilot-mysql
-    restart: unless-stopped
-    environment:
-      MYSQL_DATABASE: interview
-      MYSQL_USER: interview
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in .env}
-    volumes:
-      - mysql-data:/var/lib/mysql
-    networks: [interview-copilot-net]
-    healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
-      interval: 5s
-      timeout: 5s
-      retries: 30
-    deploy:
-      resources:
-        limits: { cpus: "0.5", memory: 512M }
-
-  migrate:
-    image: ${IMAGE:-ghcr.io/kavii101/interview-copilot:latest}
-    profiles: [tools]
-    command: ["node_modules/.bin/drizzle-kit", "migrate"]
-    environment:
-      DATABASE_URL: mysql://interview:${MYSQL_PASSWORD}@mysql:3306/interview
-    depends_on:
-      mysql: { condition: service_healthy }
-    networks: [interview-copilot-net]
-
   web:
-    image: ${IMAGE:-ghcr.io/kavii101/interview-copilot:latest}
+    image: ${IMAGE:?set IMAGE in .env to a pinned :<sha> tag}
+    pull_policy: never
     container_name: interview-copilot-web
     restart: unless-stopped
+    init: true # forwards SIGTERM so `docker stop` exits cleanly (SQLite WAL checkpoint)
     env_file: .env
     environment:
       NODE_ENV: production
       PORT: ${APP_PORT:-3020}
-      DATABASE_URL: mysql://interview:${MYSQL_PASSWORD}@mysql:3306/interview
+      DATABASE_URL: /data/app.db
+      MIGRATE_ON_BOOT: "true"
     ports:
       # Loopback only; host nginx terminates TLS and proxies here.
       - "127.0.0.1:${APP_PORT:-3020}:${APP_PORT:-3020}"
-    depends_on:
-      mysql: { condition: service_healthy }
+    volumes:
+      - data:/data
     networks: [interview-copilot-net]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+process.env.PORT+'/api/trpc/interview.config').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
     deploy:
       resources:
-        limits: { cpus: "0.75", memory: 768M }
+        limits: { cpus: "0.50", memory: 512M }
 
 networks:
   interview-copilot-net:
     name: interview-copilot-net
 
 volumes:
-  mysql-data:
-    name: interview-copilot-mysql-data
+  data:
+    name: interview-copilot-data
