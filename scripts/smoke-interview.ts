@@ -13,10 +13,14 @@ import superjson from "superjson";
 import type { AppRouter } from "../server/routers";
 
 const BASE_URL = (process.env.BASE_URL ?? "http://localhost:3000").replace(/\/$/, "");
+// For staging behind nginx basic auth: SMOKE_BASIC_AUTH=user:password
+const AUTH_HEADERS: Record<string, string> = process.env.SMOKE_BASIC_AUTH
+  ? { authorization: `Basic ${Buffer.from(process.env.SMOKE_BASIC_AUTH).toString("base64")}` }
+  : {};
 const WS = process.env.SMOKE_WORKSPACE ?? `smoke-${Date.now()}`;
 
 const trpc = createTRPCClient<AppRouter>({
-  links: [httpLink({ url: `${BASE_URL}/api/trpc`, transformer: superjson })],
+  links: [httpLink({ url: `${BASE_URL}/api/trpc`, transformer: superjson, headers: () => AUTH_HEADERS })],
 });
 
 const JD = `Head of Business Intelligence — online casino & sportsbook operator (EU).
@@ -121,7 +125,7 @@ async function main() {
       const t0 = Date.now();
       const res = await fetch(`${BASE_URL}/api/interview/live/stream`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...AUTH_HEADERS },
         body: JSON.stringify({ workspaceId: WS, question: "Walk me through how you'd build an LTV model for a sportsbook." }),
       });
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
