@@ -43,18 +43,20 @@
 }
 
 :root {
-  --primary: var(--color-blue-700);
-  --primary-foreground: var(--color-blue-50);
-  --sidebar-primary: var(--color-blue-600);
-  --sidebar-primary-foreground: var(--color-blue-50);
-  --chart-1: var(--color-blue-300);
-  --chart-2: var(--color-blue-500);
-  --chart-3: var(--color-blue-600);
-  --chart-4: var(--color-blue-700);
-  --chart-5: var(--color-blue-800);
-  --radius: 0.65rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.235 0.015 65);
+  /* Brand: ink primary (near-black actions), emerald signal (live/ready). */
+  --primary: oklch(0.21 0.01 160);
+  --primary-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.21 0.01 160);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --signal: oklch(0.72 0.17 160);
+  --chart-1: oklch(0.72 0.17 160);
+  --chart-2: oklch(0.55 0.12 160);
+  --chart-3: oklch(0.4 0.08 160);
+  --chart-4: oklch(0.3 0.05 160);
+  --chart-5: oklch(0.21 0.01 160);
+  --radius: 0.75rem;
+  --background: oklch(0.985 0.002 160);
+  --foreground: oklch(0.21 0.01 160);
   --card: oklch(1 0 0);
   --card-foreground: oklch(0.235 0.015 65);
   --popover: oklch(1 0 0);
@@ -67,9 +69,9 @@
   --accent-foreground: oklch(0.141 0.005 285.823);
   --destructive: oklch(0.577 0.245 27.325);
   --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(0.92 0.004 286.32);
-  --input: oklch(0.92 0.004 286.32);
-  --ring: oklch(0.623 0.214 259.815);
+  --border: oklch(0.91 0.004 160);
+  --input: oklch(0.91 0.004 160);
+  --ring: oklch(0.72 0.17 160);
   --sidebar: oklch(0.985 0 0);
   --sidebar-foreground: oklch(0.235 0.015 65);
   --sidebar-accent: oklch(0.967 0.001 286.375);
@@ -118,7 +120,21 @@
     @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: "ss01", "cv11";
+    text-rendering: optimizeLegibility;
+  }
+  ::selection {
+    background: oklch(0.72 0.17 160 / 35%);
+  }
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
   }
   button:not(:disabled),
   [role="button"]:not([aria-disabled="true"]),
@@ -173,5 +189,24 @@
       padding-right: 2rem;
       max-width: 1280px; /* Standard content width */
     }
+  }
+
+  /* Dark prompter stage shared by Present / Answers / Subtitles. */
+  .stage {
+    background: #0b0e0d;
+    color: #f2f5f3;
+  }
+  @keyframes cue-in {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .cue-in {
+    animation: cue-in 180ms ease-out;
+  }
+  .no-scrollbar {
+    scrollbar-width: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
   }
 }

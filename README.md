@@ -71,6 +71,15 @@ Before launch, configure a primary provider and validate its commercial terms, l
 
 The feature is designed to fail safely: invalid input is rejected before provider spend, transient provider errors retry and fail over, duplicate idempotency keys return the existing job, authorization is workspace-scoped, and the underlying Bouncy AI insight remains usable as text if audio is unavailable.
 
+## Interview Copilot
+
+A separately gated interview-preparation feature (Prepare, Practice, SQL lab;
+Live assist behind its own flag) built on this module's auth, workspace,
+storage, LLM, and redaction patterns. It is off by default and lives at
+`/interview`. Enable with `INTERVIEW_COPILOT_ENABLED=true`. See
+[`docs/interview-copilot.md`](docs/interview-copilot.md) for the API surface,
+data flow, grounding/SQL-safety design, privacy behavior, and what is deferred.
+
 ## GitHub
 
 Recommended repository: `Kavii101/bouncy-ai-tts` (private). Create and push with:

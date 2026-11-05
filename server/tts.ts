@@ -1,12 +1,13 @@
 import crypto from "node:crypto";
 import { ENV } from "./_core/env";
+import { isOpenAiUrl, providerEndpoint } from "./_core/providerConfig";
 
 export const TTS_LANGUAGES = ["en-US", "en-GB", "en-IN", "fr-FR", "es-ES", "de-DE"] as const;
 export const TTS_VOICES = [
+  { id: "Aoede", label: "Aoede · Natural and warm (recommended)", languages: TTS_LANGUAGES },
+  { id: "Achird", label: "Achird · Friendly", languages: TTS_LANGUAGES },
   { id: "Charon", label: "Charon · Informative", languages: TTS_LANGUAGES },
   { id: "Kore", label: "Kore · Firm", languages: TTS_LANGUAGES },
-  { id: "Aoede", label: "Aoede · Breezy", languages: TTS_LANGUAGES },
-  { id: "Achird", label: "Achird · Friendly", languages: TTS_LANGUAGES },
 ] as const;
 export const TTS_SPEEDS = [0.75, 1, 1.25, 1.5] as const;
 export const MAX_TTS_CHARS = Number(process.env.TTS_MAX_CHARS ?? 5000);
@@ -48,6 +49,9 @@ export function makeObjectKey(workspaceId: string, jobId: string) {
   return `tts/${safeWorkspace}/${jobId}.mp3`;
 }
 
+// The UI's voice ids are provider-neutral; OpenAI only accepts its own names.
+export const OPENAI_VOICE_BY_ID: Record<string, string> = { Aoede: "coral", Achird: "alloy", Charon: "onyx", Kore: "sage" };
+
 class HttpTtsProvider implements TtsProvider {
   constructor(public readonly name: string, private readonly baseUrl: string, private readonly apiKey: string, private readonly model: string) {}
   async synthesize(request: TtsRequest, signal?: AbortSignal): Promise<AudioArtifact> {
@@ -55,7 +59,7 @@ class HttpTtsProvider implements TtsProvider {
       method: "POST",
       signal,
       headers: { Authorization: `Bearer ${this.apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: this.model, input: request.text, voice: request.voiceId, speed: request.speed, response_format: "mp3" }),
+      body: JSON.stringify({ model: this.model, input: request.text, voice: isOpenAiUrl(this.baseUrl) ? OPENAI_VOICE_BY_ID[request.voiceId] ?? request.voiceId : request.voiceId, speed: request.speed, response_format: "mp3" }),
     });
     if (!response.ok) {
       const error = new Error(`PROVIDER_${response.status}`);
@@ -74,6 +78,11 @@ export function configuredProviders(): TtsProvider[] {
   const secondaryKey = process.env.TTS_SECONDARY_API_KEY;
   if (primaryUrl && primaryKey) providers.push(new HttpTtsProvider("primary", primaryUrl, primaryKey, process.env.TTS_PRIMARY_MODEL ?? "tts-1"));
   if (secondaryUrl && secondaryKey) providers.push(new HttpTtsProvider("secondary", secondaryUrl, secondaryKey, process.env.TTS_SECONDARY_MODEL ?? "tts-1"));
+  // No dedicated TTS provider: reuse the chat provider when it is plain OpenAI.
+  // (Manus Forge has no /audio/speech, so it is not assumed here.)
+  if (!providers.length && ENV.forgeApiKey && isOpenAiUrl(ENV.forgeApiUrl)) {
+    providers.push(new HttpTtsProvider("primary", providerEndpoint(ENV.forgeApiUrl, "v1"), ENV.forgeApiKey, process.env.TTS_PRIMARY_MODEL ?? "tts-1"));
+  }
   return providers;
 }
 

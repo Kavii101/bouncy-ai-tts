@@ -1,0 +1,50 @@
+{
+  "product": "Bounty Online co-pilot",
+  "maker": "BountyAI",
+  "palette": { "navy": "#13203A", "gold": "#F9B600", "sky": "#DCEBF7", "canvas": "#F7F8FA", "ink": "#182234", "muted": "#566176", "emerald": "#10B981", "border": "#DCE2EA" },
+  "screens": {
+    "setup": {
+      "title": "Interview Copilot",
+      "steps": ["1 · Add job description", "2 · Add résumé", "3 · Generate brief"],
+      "leftCard": { "title": "Add material", "modes": ["Paste text", "Upload file"], "pdfRow": "PDF document — Coming soon", "primary": "Add job description" },
+      "rightCard": { "title": "Your materials", "empty": "Nothing here yet", "primary": "Generate brief" }
+    },
+    "brief": {
+      "badge": "Approved",
+      "cards": ["Role summary", "Requirements → evidence", "Evidence", "Gaps to address"],
+      "gapBadge": "Gap — no evidence",
+      "cta": "Start practicing →"
+    },
+    "practice": {
+      "title": "Your answer",
+      "controls": ["Hear question", "Answer by voice", "Get feedback"],
+      "feedbackTitles": ["Strengths", "Improvements", "Suggested outline"],
+      "followUpLabel": "Keep the conversation going"
+    },
+    "liveStage": {
+      "toolbar": ["Listening", "My mic", "Share interview", "Stop", "Clear", "Answers window", "Subtitles"],
+      "left": "Interview — Shared tab · picture only",
+      "right": "What to say",
+      "confidence": "confidence: high",
+      "verify": "verify before using",
+      "unsupported": "Not in your evidence — don't state as fact"
+    },
+    "presentLiveScroll": {
+      "states": ["Following your voice", "Paused — holding your place", "Off course — bridge below"],
+      "bridge": "Bridge back — pick up this point, then continue:",
+      "next": "Coming next:"
+    },
+    "listen": {
+      "title": "Listen",
+      "voiceDefault": "Aoede · Natural and warm (recommended)",
+      "primary": "Generate cloud audio",
+      "secondary": "Read aloud on this device"
+    },
+    "fixture": {
+      "label": "Sample candidate · simulated interview",
+      "question": "Tell me about a time stakeholders disagreed about an important metric. How did you reach a decision?",
+      "followUp": "What changed after that decision, and how did you know it worked?",
+      "gapQuestion": "Tell me about your Kubernetes production migration."
+    }
+  }
+}

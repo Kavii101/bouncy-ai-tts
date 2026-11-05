@@ -3,8 +3,8 @@
  *
  * Frontend implementation guide:
  * 1. Capture audio using MediaRecorder API
- * 2. Upload audio to storage (e.g., S3) to get URL
- * 3. Call transcription with the URL
+ * 2. Send the bytes to the server (base64 over tRPC)
+ * 3. Server calls transcribeBytes() — direct multipart POST, no storage hop
  * 
  * Example usage:
  * ```tsx
@@ -26,6 +26,7 @@
  * ```
  */
 import { ENV } from "./env";
+import { audioExtensionFor, providerEndpoint, resolveTranscriptionModel } from "./providerConfig";
 
 export type TranscribeOptions = {
   audioUrl: string; // URL to the audio file (e.g., S3 URL)
@@ -64,101 +65,134 @@ export type TranscriptionError = {
   details?: string;
 };
 
+export type TranscribeBytesOptions = {
+  language?: string;
+  prompt?: string;
+};
+
+const MAX_AUDIO_BYTES = 16 * 1024 * 1024;
+const TRANSCRIBE_TIMEOUT_MS = 30_000;
+
+// Known Whisper/ASR hallucination artifacts. Models like whisper-1 invent these
+// training-data phrases when they hear silence, breath, or room noise (the
+// classic "thanks for watching / subscribe / www….com" captions). We only drop
+// a transcript when, after removing these, nothing substantive is left — so a
+// real sentence that merely *contains* a URL is never discarded.
+const HALLUCINATION_PATTERNS: RegExp[] = [
+  /thank(s| you)?( you)? for watching/gi,
+  /please (like and )?subscribe/gi,
+  /don'?t forget to (like,? ?)?subscribe/gi,
+  /subscribe to (our|the|my|this) channel/gi,
+  /\bsubscribe\b/gi,
+  /like,? comment,? and subscribe/gi,
+  /see you (next time|in the next (video|one))/gi,
+  /for more (information|info),?\s*(please )?visit/gi,
+  /\bwww\.[^\s]+/gi,
+  /https?:\/\/[^\s]+/gi,
+  /\bfema\.gov\b/gi,
+  /subtitles?( are)? (by|provided by|created by)/gi,
+  /transcribed by/gi,
+  /amara\.org/gi,
+  /©|\ball rights reserved\b/gi,
+];
+
+// Whisper verbose segments expose per-segment confidence. These thresholds are
+// OpenAI's own documented hallucination signals: a segment that is almost
+// certainly non-speech, very low average log-probability, or highly repetitive
+// (compression ratio) is dropped.
+function filterLowConfidenceSegments(segments: WhisperSegment[]): { text: string; segments: WhisperSegment[] } {
+  const kept = segments.filter(
+    s =>
+      !(typeof s.no_speech_prob === "number" && s.no_speech_prob > 0.6 && typeof s.avg_logprob === "number" && s.avg_logprob < -1) &&
+      !(typeof s.compression_ratio === "number" && s.compression_ratio > 2.4),
+  );
+  return { text: kept.map(s => s.text).join("").trim(), segments: kept };
+}
+
+// True when the text is only hallucination artifacts (nothing meaningful left
+// once the known junk phrases are stripped). Empty strings are handled by the
+// caller as legitimate silence, so they are not treated as hallucinations here.
+function isPureHallucination(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  let residual = trimmed;
+  for (const re of HALLUCINATION_PATTERNS) residual = residual.replace(re, " ");
+  // Strip ASCII punctuation/whitespace/control but keep alphanumerics and any
+  // non-ASCII letters (accented Latin, CJK, Arabic, …) so non-English speech is
+  // never mistaken for junk. Avoids \p{} unicode escapes (needs a newer target).
+  const substantive = residual.replace(/[^A-Za-z0-9À-￿]/g, "");
+  return substantive.length < 3;
+}
+
+// Apply segment-confidence filtering (whisper verbose) then the artifact check.
+// Returns the cleaned text and the surviving segments.
+function scrubTranscript(text: string, segments: WhisperSegment[]): { text: string; segments: WhisperSegment[] } {
+  let outText = text;
+  let outSegments = segments;
+  if (segments.length > 0) {
+    const filtered = filterLowConfidenceSegments(segments);
+    outSegments = filtered.segments;
+    outText = filtered.text;
+  }
+  if (isPureHallucination(outText)) return { text: "", segments: [] };
+  return { text: outText, segments: outSegments };
+}
+
 /**
- * Transcribe audio to text using the internal Speech-to-Text service
- * 
- * @param options - Audio data and metadata
- * @returns Transcription result or error
+ * Transcribe raw audio bytes by multipart-POSTing them straight to
+ * `{BUILT_IN_FORGE_API_URL}/v1/audio/transcriptions`. No object storage, no
+ * signed URL — works with plain OpenAI (Option B) as well as Forge.
  */
-export async function transcribeAudio(
-  options: TranscribeOptions
+export async function transcribeBytes(
+  audio: Buffer | Uint8Array,
+  mimeType: string,
+  options: TranscribeBytesOptions = {}
 ): Promise<TranscriptionResponse | TranscriptionError> {
   try {
-    // Step 1: Validate environment configuration
     if (!ENV.forgeApiUrl) {
-      return {
-        error: "Voice transcription service is not configured",
-        code: "SERVICE_ERROR",
-        details: "BUILT_IN_FORGE_API_URL is not set"
-      };
+      return { error: "Voice transcription service is not configured", code: "SERVICE_ERROR", details: "BUILT_IN_FORGE_API_URL is not set" };
     }
     if (!ENV.forgeApiKey) {
+      return { error: "Voice transcription service authentication is missing", code: "SERVICE_ERROR", details: "BUILT_IN_FORGE_API_KEY is not set" };
+    }
+    if (audio.byteLength > MAX_AUDIO_BYTES) {
       return {
-        error: "Voice transcription service authentication is missing",
-        code: "SERVICE_ERROR",
-        details: "BUILT_IN_FORGE_API_KEY is not set"
+        error: "Audio file exceeds maximum size limit",
+        code: "FILE_TOO_LARGE",
+        details: `File size is ${(audio.byteLength / (1024 * 1024)).toFixed(2)}MB, maximum allowed is 16MB`,
       };
     }
-
-    // Step 2: Download audio from URL
-    let audioBuffer: Buffer;
-    let mimeType: string;
-    try {
-      const response = await fetch(options.audioUrl);
-      if (!response.ok) {
-        return {
-          error: "Failed to download audio file",
-          code: "INVALID_FORMAT",
-          details: `HTTP ${response.status}: ${response.statusText}`
-        };
-      }
-      
-      audioBuffer = Buffer.from(await response.arrayBuffer());
-      mimeType = response.headers.get('content-type') || 'audio/mpeg';
-      
-      // Check file size (16MB limit)
-      const sizeMB = audioBuffer.length / (1024 * 1024);
-      if (sizeMB > 16) {
-        return {
-          error: "Audio file exceeds maximum size limit",
-          code: "FILE_TOO_LARGE",
-          details: `File size is ${sizeMB.toFixed(2)}MB, maximum allowed is 16MB`
-        };
-      }
-    } catch (error) {
-      return {
-        error: "Failed to fetch audio file",
-        code: "SERVICE_ERROR",
-        details: error instanceof Error ? error.message : "Unknown error"
-      };
+    const ext = audioExtensionFor(mimeType);
+    if (!ext) {
+      return { error: "Unsupported audio format", code: "INVALID_FORMAT", details: `MIME type ${mimeType} is not supported` };
     }
 
-    // Step 3: Create FormData for multipart upload to Whisper API
     const formData = new FormData();
-    
-    // Create a Blob from the buffer and append to form
-    const filename = `audio.${getFileExtension(mimeType)}`;
-    const audioBlob = new Blob([new Uint8Array(audioBuffer)], { type: mimeType });
-    formData.append("file", audioBlob, filename);
-    
-    formData.append("model", "whisper-1");
-    formData.append("response_format", "verbose_json");
-    
-    // Add prompt - use custom prompt if provided, otherwise generate based on language
-    const prompt = options.prompt || (
-      options.language 
+    const cleanMime = mimeType.split(";")[0].trim();
+    formData.append("file", new Blob([new Uint8Array(audio)], { type: cleanMime }), `audio.${ext}`);
+    const model = resolveTranscriptionModel(ENV.transcriptionModel);
+    formData.append("model", model);
+    // gpt-4o-*-transcribe models only support json/text; whisper-1 gives us
+    // language + duration via verbose_json.
+    formData.append("response_format", model === "whisper-1" ? "verbose_json" : "json");
+    if (options.language) formData.append("language", options.language);
+    const prompt =
+      options.prompt ||
+      (options.language
         ? `Transcribe the user's voice to text, the user's working language is ${getLanguageName(options.language)}`
-        : "Transcribe the user's voice to text"
-    );
+        : "Transcribe the user's voice to text");
     formData.append("prompt", prompt);
+    // temperature=0 makes decoding deterministic and reduces invented text.
+    // Only whisper-1 documents this parameter on the transcription endpoint;
+    // the gpt-4o-*-transcribe models are already low-temperature by default and
+    // can reject unknown params, so we scope it to whisper-1.
+    if (model === "whisper-1") formData.append("temperature", "0");
 
-    // Step 4: Call the transcription service
-    const baseUrl = ENV.forgeApiUrl.endsWith("/")
-      ? ENV.forgeApiUrl
-      : `${ENV.forgeApiUrl}/`;
-    
-    const fullUrl = new URL(
-      "v1/audio/transcriptions",
-      baseUrl
-    ).toString();
-
-    const response = await fetch(fullUrl, {
+    const response = await fetch(providerEndpoint(ENV.forgeApiUrl, "v1/audio/transcriptions"), {
       method: "POST",
-      headers: {
-        authorization: `Bearer ${ENV.forgeApiKey}`,
-        "Accept-Encoding": "identity",
-      },
+      headers: { authorization: `Bearer ${ENV.forgeApiKey}`, "Accept-Encoding": "identity" },
       body: formData,
+      signal: AbortSignal.timeout(TRANSCRIBE_TIMEOUT_MS),
     });
 
     if (!response.ok) {
@@ -166,50 +200,53 @@ export async function transcribeAudio(
       return {
         error: "Transcription service request failed",
         code: "TRANSCRIPTION_FAILED",
-        details: `${response.status} ${response.statusText}${errorText ? `: ${errorText}` : ""}`
+        details: `${response.status} ${response.statusText}${errorText ? `: ${errorText.slice(0, 500)}` : ""}`,
       };
     }
 
-    // Step 5: Parse and return the transcription result
-    const whisperResponse = await response.json() as WhisperResponse;
-    
-    // Validate response structure
-    if (!whisperResponse.text || typeof whisperResponse.text !== 'string') {
-      return {
-        error: "Invalid transcription response",
-        code: "SERVICE_ERROR",
-        details: "Transcription service returned an invalid response format"
-      };
+    const json = (await response.json()) as Partial<WhisperResponse>;
+    if (typeof json.text !== "string") {
+      return { error: "Invalid transcription response", code: "SERVICE_ERROR", details: "Transcription service returned an invalid response format" };
     }
-
-    return whisperResponse; // Return native Whisper API response directly
-
+    // Drop silence/noise hallucinations before returning. Silence legitimately
+    // transcribes to "" — that's a result, not an error.
+    const scrubbed = scrubTranscript(json.text, json.segments ?? []);
+    return {
+      task: "transcribe",
+      language: json.language ?? options.language ?? "",
+      duration: json.duration ?? 0,
+      text: scrubbed.text,
+      segments: scrubbed.segments,
+    };
   } catch (error) {
-    // Handle unexpected errors
     return {
       error: "Voice transcription failed",
       code: "SERVICE_ERROR",
-      details: error instanceof Error ? error.message : "An unexpected error occurred"
+      details: error instanceof Error ? error.message : "An unexpected error occurred",
     };
   }
 }
 
 /**
- * Helper function to get file extension from MIME type
+ * Transcribe audio at a URL (legacy Forge storage flow): downloads the file and
+ * delegates to `transcribeBytes`.
  */
-function getFileExtension(mimeType: string): string {
-  const mimeToExt: Record<string, string> = {
-    'audio/webm': 'webm',
-    'audio/mp3': 'mp3',
-    'audio/mpeg': 'mp3',
-    'audio/wav': 'wav',
-    'audio/wave': 'wav',
-    'audio/ogg': 'ogg',
-    'audio/m4a': 'm4a',
-    'audio/mp4': 'm4a',
-  };
-  
-  return mimeToExt[mimeType] || 'audio';
+export async function transcribeAudio(
+  options: TranscribeOptions
+): Promise<TranscriptionResponse | TranscriptionError> {
+  let audioBuffer: Buffer;
+  let mimeType: string;
+  try {
+    const response = await fetch(options.audioUrl);
+    if (!response.ok) {
+      return { error: "Failed to download audio file", code: "INVALID_FORMAT", details: `HTTP ${response.status}: ${response.statusText}` };
+    }
+    audioBuffer = Buffer.from(await response.arrayBuffer());
+    mimeType = response.headers.get("content-type") || "audio/mpeg";
+  } catch (error) {
+    return { error: "Failed to fetch audio file", code: "SERVICE_ERROR", details: error instanceof Error ? error.message : "Unknown error" };
+  }
+  return transcribeBytes(audioBuffer, mimeType, { language: options.language, prompt: options.prompt });
 }
 
 /**

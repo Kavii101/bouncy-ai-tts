@@ -1,4 +1,5 @@
 import { ENV } from "./env";
+import { resolveChatModel } from "./providerConfig";
 
 export type Role = "system" | "user" | "assistant" | "tool" | "function";
 
@@ -69,6 +70,8 @@ export type InvokeParams = {
   model?: string;
   thinking?: Record<string, unknown>;
   reasoning?: Record<string, unknown>;
+  /** Lets the caller give up early; the request is cancelled and not retried. */
+  signal?: AbortSignal;
 };
 
 export type ToolCall = {
@@ -268,14 +271,33 @@ const normalizeResponseFormat = ({
   };
 };
 
-const RETRY_MAX_RETRIES = 4;
+const RETRY_MAX_RETRIES = 2;
 const RETRY_BASE_DELAY_MS = 500;
-const RETRY_MAX_DELAY_MS = 30_000;
+const RETRY_MAX_DELAY_MS = 8_000;
+// Every provider call is bounded: a stalled upstream must surface as an error
+// the UI can show, never as a spinner that lasts forever.
+const LLM_ATTEMPT_TIMEOUT_MS = 60_000;
+const STREAM_FIRST_TOKEN_TIMEOUT_MS = 15_000;
+const STREAM_IDLE_TIMEOUT_MS = 12_000;
+
+// Only failures that can succeed on a second try. A 400/401/404 will not, and
+// retrying one just makes the person wait to see the same error.
+export const isRetryableStatus = (status: number) =>
+  status === 408 || status === 409 || status === 429 || status >= 500;
 
 type FetchInit = NonNullable<Parameters<typeof fetch>[1]>;
 
-const sleep = (ms: number) =>
-  new Promise<void>(resolve => setTimeout(resolve, ms));
+const sleep = (ms: number, signal?: AbortSignal) =>
+  new Promise<void>(resolve => {
+    if (signal?.aborted) return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+  });
 
 const parseRetryAfter = (value: string | null): number | undefined => {
   if (!value) return undefined;
@@ -307,8 +329,9 @@ const fetchWithBackoff = async (
 
   for (let attempt = 0; attempt <= RETRY_MAX_RETRIES; attempt++) {
     try {
-      const response = await fetch(url, init);
-      if (response.ok || attempt === RETRY_MAX_RETRIES) {
+      const timeout = AbortSignal.timeout(LLM_ATTEMPT_TIMEOUT_MS);
+      const response = await fetch(url, { ...init, signal: init.signal ? AbortSignal.any([init.signal, timeout]) : timeout });
+      if (response.ok || attempt === RETRY_MAX_RETRIES || !isRetryableStatus(response.status)) {
         return response;
       }
 
@@ -323,14 +346,14 @@ const fetchWithBackoff = async (
       console.warn(
         `LLM request retry ${attempt + 1}/${RETRY_MAX_RETRIES} after status ${response.status}`
       );
-      await sleep(computeBackoffDelay(attempt, retryAfterMs));
+      await sleep(computeBackoffDelay(attempt, retryAfterMs), init.signal ?? undefined);
     } catch (error) {
       lastError = error;
-      if (attempt === RETRY_MAX_RETRIES) throw error;
+      if (attempt === RETRY_MAX_RETRIES || init.signal?.aborted) throw error;
       console.warn(
         `LLM request retry ${attempt + 1}/${RETRY_MAX_RETRIES} after network error`
       );
-      await sleep(computeBackoffDelay(attempt));
+      await sleep(computeBackoffDelay(attempt), init.signal ?? undefined);
     }
   }
 
@@ -356,14 +379,16 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     reasoning,
     maxTokens,
     max_tokens,
+    signal,
   } = params;
 
   const payload: Record<string, unknown> = {
     messages: messages.map(normalizeMessage),
   };
 
-  if (model) {
-    payload.model = model;
+  const resolvedModel = resolveChatModel({ requested: model, envModel: ENV.llmModel, apiUrl: resolveApiUrl() });
+  if (resolvedModel) {
+    payload.model = resolvedModel;
   }
 
   if (tools && tools.length > 0) {
@@ -408,6 +433,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
       authorization: `Bearer ${ENV.forgeApiKey}`,
     },
     body: JSON.stringify(payload),
+    signal,
   });
 
   if (!response.ok) {
@@ -418,6 +444,117 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   }
 
   return (await response.json()) as InvokeResult;
+}
+
+export type StreamParams = {
+  messages: Message[];
+  model?: string;
+  maxTokens?: number;
+  responseFormat?: ResponseFormat;
+  outputSchema?: OutputSchema;
+  /** Aborts the upstream request, e.g. when the client disconnects. */
+  signal?: AbortSignal;
+};
+
+// Streams content deltas from the provider as they arrive (OpenAI-compatible
+// SSE). Yields each text fragment; callers accumulate and may parse the full
+// result when the stream ends. Keeps the batch `invokeLLM` untouched for
+// callers that need the whole response.
+export async function* invokeLLMStream(params: StreamParams): AsyncGenerator<string, void, unknown> {
+  assertApiKey();
+
+  const payload: Record<string, unknown> = {
+    messages: params.messages.map(normalizeMessage),
+    stream: true,
+  };
+  const resolvedModel = resolveChatModel({ requested: params.model, envModel: ENV.llmModel, apiUrl: resolveApiUrl() });
+  if (resolvedModel) payload.model = resolvedModel;
+  if (typeof params.maxTokens === "number") payload.max_tokens = params.maxTokens;
+  const responseFormat = normalizeResponseFormat({
+    responseFormat: params.responseFormat,
+    outputSchema: params.outputSchema,
+  });
+  if (responseFormat) payload.response_format = responseFormat;
+
+  // One controller for caller aborts and both watchdogs, so each ends the same way.
+  const controller = new AbortController();
+  const abortFromCaller = () => controller.abort();
+  if (params.signal?.aborted) controller.abort();
+  params.signal?.addEventListener("abort", abortFromCaller, { once: true });
+  let watchdog: ReturnType<typeof setTimeout> | undefined;
+  const armWatchdog = (ms: number) => {
+    clearTimeout(watchdog);
+    watchdog = setTimeout(() => controller.abort(), ms);
+  };
+  armWatchdog(STREAM_FIRST_TOKEN_TIMEOUT_MS);
+
+  let response: Response;
+  try {
+    response = await fetch(resolveApiUrl(), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${ENV.forgeApiKey}`,
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    clearTimeout(watchdog);
+    params.signal?.removeEventListener("abort", abortFromCaller);
+    throw error;
+  }
+
+  if (!response.ok || !response.body) {
+    clearTimeout(watchdog);
+    params.signal?.removeEventListener("abort", abortFromCaller);
+    const errorText = await response.text().catch(() => response.statusText);
+    throw new Error(`LLM stream failed: ${response.status} ${response.statusText} – ${errorText}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      armWatchdog(STREAM_IDLE_TIMEOUT_MS);
+      buffer += decoder.decode(value, { stream: true });
+      buffer = buffer.replace(/\r\n/g, "\n"); // tolerate CRLF SSE framing
+
+      // SSE frames are separated by a blank line.
+      let sep: number;
+      while ((sep = buffer.indexOf("\n\n")) !== -1) {
+        const frame = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+        for (const line of frame.split("\n")) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data:")) continue;
+          const data = trimmed.slice(5).trim();
+          if (data === "[DONE]") return;
+          try {
+            const json = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> };
+            const content = json.choices?.[0]?.delta?.content;
+            if (content) yield content;
+          } catch {
+            // Partial/keep-alive frame; ignore.
+          }
+        }
+      }
+    }
+  } finally {
+    // Release the upstream connection on any exit — including when the consumer
+    // (e.g. a disconnected SSE client) breaks the for-await early.
+    clearTimeout(watchdog);
+    params.signal?.removeEventListener("abort", abortFromCaller);
+    try {
+      await reader.cancel();
+    } catch {
+      /* already closed */
+    }
+  }
 }
 
 export type ModelInfo = {

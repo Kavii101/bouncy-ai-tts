@@ -1,0 +1,47 @@
+# Interview Copilot on the VPS. Fully isolated from every other stack on the box:
+# own project, network, volume and loopback port. One container; SQLite on a volume.
+#
+# The image is loaded from a tar (docker load), never pulled: the box's ghcr.io
+# login belongs to another project and cannot read this package, and replacing
+# that login would break the other project's deploys. See deploy/interview-copilot/README.md.
+name: interview-copilot
+
+services:
+  web:
+    image: ${IMAGE:?set IMAGE in .env to a pinned :<sha> tag}
+    pull_policy: never
+    container_name: interview-copilot-web
+    restart: unless-stopped
+    init: true # forwards SIGTERM so `docker stop` exits cleanly (SQLite WAL checkpoint)
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: ${APP_PORT:-3020}
+      DATABASE_URL: /data/app.db
+      MIGRATE_ON_BOOT: "true"
+    ports:
+      # Loopback only; host nginx terminates TLS and proxies here.
+      - "127.0.0.1:${APP_PORT:-3020}:${APP_PORT:-3020}"
+    volumes:
+      - data:/data
+    networks: [interview-copilot-net]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+process.env.PORT+'/api/trpc/interview.config').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    deploy:
+      resources:
+        limits: { cpus: "0.50", memory: 512M }
+
+networks:
+  interview-copilot-net:
+    name: interview-copilot-net
+
+volumes:
+  data:
+    name: interview-copilot-data

@@ -35,3 +35,11 @@ describe("TTS integration primitives", () => {
     expect(attempts).toBe(2);
   });
 });
+
+describe("OpenAI speech fallback", () => {
+  it("maps every UI voice to a name OpenAI accepts", async () => {
+    const { OPENAI_VOICE_BY_ID, TTS_VOICES } = await import("./tts");
+    const accepted = new Set(["alloy", "ash", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"]);
+    for (const voice of TTS_VOICES) expect(accepted.has(OPENAI_VOICE_BY_ID[voice.id])).toBe(true);
+  });
+});
