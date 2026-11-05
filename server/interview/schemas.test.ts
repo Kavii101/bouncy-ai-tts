@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MalformedModelOutput, answerFeedbackSchema, briefSchema, parseModelJson } from "./schemas";
+import { MalformedModelOutput, answerFeedbackSchema, answerSuggestionSchema, briefSchema, parseModelJson } from "./schemas";
 
 describe("structured model-output validation", () => {
   it("accepts a well-formed brief", () => {
@@ -35,5 +35,14 @@ describe("structured model-output validation", () => {
       followUpQuestions: [],
     };
     expect(() => parseModelJson(answerFeedbackSchema, JSON.stringify(payload))).toThrow(MalformedModelOutput);
+  });
+});
+
+describe("answer suggestion own-words note", () => {
+  const base = { directAnswer: "x", bullets: [], evidence: [], assumptions: [], unsupportedClaims: [], confidence: "high", shouldVerify: false };
+
+  it("keeps the note, and treats a strict-mode null as absent", () => {
+    expect(answerSuggestionSchema.parse({ ...base, addYourOwn: "Add what took the time." }).addYourOwn).toBe("Add what took the time.");
+    expect(parseModelJson(answerSuggestionSchema, JSON.stringify({ ...base, addYourOwn: null })).addYourOwn).toBeUndefined();
   });
 });

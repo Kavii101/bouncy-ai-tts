@@ -12,7 +12,7 @@ import { stripNulls } from "./strictSchema";
 import { z } from "zod";
 
 // Bump whenever a prompt or contract changes, so stored results are traceable.
-export const PROMPT_VERSION = "interview-2026-11-05c";
+export const PROMPT_VERSION = "interview-2026-11-05d";
 
 export class MalformedModelOutput extends Error {
   constructor(message = "MODEL_OUTPUT_MALFORMED") {
@@ -97,6 +97,7 @@ export const answerSuggestionSchema = z.object({
     .max(10),
   assumptions: z.array(z.string().max(400)).max(8),
   followUpQuestion: z.string().max(400).optional(),
+  addYourOwn: z.string().max(300).optional(),
   unsupportedClaims: z.array(z.string().max(400)).max(10),
   confidence: z.enum(["high", "medium", "low"]),
   shouldVerify: z.boolean(),
@@ -264,6 +265,7 @@ export const answerSuggestionJsonSchema = {
       },
       assumptions: stringArray,
       followUpQuestion: { type: "string" },
+      addYourOwn: { type: "string" },
       unsupportedClaims: stringArray,
       confidence: { type: "string", enum: ["high", "medium", "low"] },
       shouldVerify: { type: "boolean" },

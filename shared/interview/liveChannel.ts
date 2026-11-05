@@ -18,6 +18,7 @@ export type ChannelSuggestion = {
   evidence: Array<{ evidenceId: string; claim: string; verified: boolean }>;
   assumptions: string[];
   followUpQuestion?: string;
+  addYourOwn?: string;
   unsupportedClaims: string[];
   confidence: "high" | "medium" | "low";
   shouldVerify: boolean;

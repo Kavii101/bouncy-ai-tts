@@ -419,7 +419,7 @@ export const interviewRouter = router({
           });
           if ("error" in result) throw new Error(result.code);
           // Detect the spoken language from the text (gpt-4o-transcribe returns
-          // no language label). Used only for a UI badge; answers stay English.
+          // no language label). Used only for a UI badge; the answer engine follows the question itself.
           const detected = detectLanguage(result.text);
           // Only log finals — partials fire several times per turn. Language code
           // is non-sensitive; the transcript text itself is never logged.
