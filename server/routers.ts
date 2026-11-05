@@ -6,7 +6,8 @@ import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import { createArtifact, createTtsJob, ensureWorkspaceAccess, findTtsJobByIdempotency, getArtifact, getTtsJob, getOrCreateQuota, listRecentJobs, updateTtsJob, consumeQuota, countActiveJobs } from "./db";
-import { DEFAULT_RETENTION_HOURS, errorCode, hashText, makeObjectKey, publicTtsConfig, synthesizeWithFailover, validateTtsRequest, type TtsSourceType } from "./tts";
+import { DEFAULT_RETENTION_HOURS, configuredProviders, errorCode, hashText, makeObjectKey, publicTtsConfig, synthesizeWithFailover, validateTtsRequest, type TtsSourceType } from "./tts";
+import { ENV } from "./_core/env";
 import { storageGetSignedUrl, storagePut } from "./storage"; import { transcribeBytes } from "./_core/voiceTranscription";
 import { interviewRouter } from "./routers/interview";
 
@@ -21,7 +22,21 @@ export const appRouter = router({
   interview: interviewRouter,
   auth: router({ me: publicProcedure.query(opts => opts.ctx.user), logout: publicProcedure.mutation(({ ctx }) => { const cookieOptions = getSessionCookieOptions(ctx.req); ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 }); return { success: true } as const; }) }),
   voice: router({     transcribe: protectedProcedure.input(z.object({ workspaceId: z.string().min(1).max(128).default("user"), audioBase64: z.string().min(100).max(22_000_000), mimeType: z.enum(["audio/webm", "audio/mp4", "audio/ogg", "audio/wav", "audio/mpeg"]), language: z.string().max(8).optional() })).mutation(async ({ ctx, input }) => {       const workspaceId = input.workspaceId === "user" ? `user-${ctx.user.id}` : input.workspaceId;       try {         await ensureWorkspaceAccess(workspaceId, ctx.user.id);         const audio = Buffer.from(input.audioBase64, "base64");         if (audio.byteLength > 16 * 1024 * 1024) throw new Error("VOICE_FILE_TOO_LARGE");         const result = await transcribeBytes(audio, input.mimeType, { language: input.language, prompt: "Transcribe the user's speech accurately for a business intelligence text-to-speech workflow." });         if ("error" in result) throw new Error(result.code);         logTtsEvent("transcription_ready", { correlationId: crypto.randomUUID(), workspaceId, userId: ctx.user.id, charCount: result.text.length, language: result.language });         return { text: result.text, language: result.language, duration: result.duration };       } catch (error) {         const code = error instanceof Error ? error.message : "TRANSCRIPTION_FAILED";         logTtsEvent("transcription_failed", { correlationId: crypto.randomUUID(), workspaceId, userId: ctx.user.id, errorCode: code });         if (code === "WORKSPACE_FORBIDDEN") throw new TRPCError({ code: "FORBIDDEN", message: "You do not have access to this workspace." });         if (code === "DATABASE_UNAVAILABLE") throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Storage is temporarily unavailable. Try again." });         if (code === "VOICE_FILE_TOO_LARGE" || code === "FILE_TOO_LARGE") throw new TRPCError({ code: "BAD_REQUEST", message: "Keep recordings under 16 MB." });         throw new TRPCError({ code: "BAD_REQUEST", message: "Speech could not be transcribed. Try again or type the text instead." });       }     }),   }),   tts: router({
-    config: publicProcedure.query(() => publicTtsConfig),
+    config: publicProcedure.query(() => ({ ...publicTtsConfig, cloudAvailable: ENV.interviewCopilotEnabled && configuredProviders().length > 0 })),
+    // No-login synthesis for self-hosted deploys: the audio comes back inline and
+    // is never stored, so it needs neither Manus OAuth nor Forge object storage.
+    speak: publicProcedure.input(z.object({ text: z.string(), languageCode: z.string(), voiceId: z.string(), speed: z.number() })).mutation(async ({ input }) => {
+      if (!ENV.interviewCopilotEnabled) throw new TRPCError({ code: "NOT_FOUND", message: "Cloud audio is not enabled." });
+      try {
+        const request = validateTtsRequest(input);
+        const audio = await synthesizeWithFailover(request, AbortSignal.timeout(60_000));
+        logTtsEvent("speak_ready", { charCount: request.text.length, byteSize: audio.data.byteLength, provider: audio.provider });
+        return { audioBase64: audio.data.toString("base64"), mimeType: audio.mimeType };
+      } catch (error) {
+        logTtsEvent("speak_failed", { errorCode: errorCode(error) });
+        fail(error);
+      }
+    }),
     quota: protectedProcedure.input(workspaceSchema).query(async ({ ctx, input }) => { const workspaceId = input.workspaceId === "user" ? `user-${ctx.user.id}` : input.workspaceId; await ensureWorkspaceAccess(workspaceId, ctx.user.id); return getOrCreateQuota(workspaceId); }),
     recent: protectedProcedure.input(workspaceSchema).query(async ({ ctx, input }) => { const workspaceId = input.workspaceId === "user" ? `user-${ctx.user.id}` : input.workspaceId; await ensureWorkspaceAccess(workspaceId, ctx.user.id); return listRecentJobs(workspaceId); }),
     create: protectedProcedure.input(requestSchema).mutation(async ({ ctx, input }) => {
