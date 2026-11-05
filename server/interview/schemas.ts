@@ -12,7 +12,7 @@ import { stripNulls } from "./strictSchema";
 import { z } from "zod";
 
 // Bump whenever a prompt or contract changes, so stored results are traceable.
-export const PROMPT_VERSION = "interview-2026-11-05b";
+export const PROMPT_VERSION = "interview-2026-11-05c";
 
 export class MalformedModelOutput extends Error {
   constructor(message = "MODEL_OUTPUT_MALFORMED") {

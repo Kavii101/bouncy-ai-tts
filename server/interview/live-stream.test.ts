@@ -19,12 +19,13 @@ vi.mock("./answer-engine", () => ({
   finalizeSuggestion: () => ({}),
 }));
 vi.mock("../_core/llm", () => ({
-  async *invokeLLMStream() {
+  async *invokeLLMStream({ signal }: { signal: AbortSignal }) {
     try {
       for (;;) {
         upstream.yielded++;
         yield "x";
         await new Promise(resolve => setTimeout(resolve, 10));
+        if (signal.aborted) throw new DOMException("aborted", "AbortError");
       }
     } finally {
       upstream.released = true;
@@ -52,6 +53,7 @@ describe("live suggestion stream", () => {
   });
 
   it("stops the upstream provider stream when the client disconnects", async () => {
+    const logged = vi.spyOn(console, "info");
     const controller = new AbortController();
     const res = await fetch(url, {
       method: "POST",
@@ -62,5 +64,7 @@ describe("live suggestion stream", () => {
     await res.body!.getReader().read();
     controller.abort();
     await vi.waitFor(() => expect(upstream.released).toBe(true), { timeout: 2000 });
+    // A deliberate cancel must not read as a failure in the logs.
+    expect(logged.mock.calls.flat().join(" ")).not.toContain("live_stream_error");
   });
 });

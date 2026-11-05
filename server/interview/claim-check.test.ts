@@ -55,6 +55,14 @@ describe("checkClaims", () => {
     expect(out).toMatchObject({ confidence: "medium", shouldVerify: true, unsupportedClaims: ["while at Betway"] });
   });
 
+  it("keeps a long audit instead of rejecting it", async () => {
+    llm.invokeLLM.mockResolvedValue(audit(Array.from({ length: 20 }, (_, i) => `claim ${i} ${"x".repeat(500)}`)));
+    const out = await checkClaims({ suggestion: answer, brief });
+    expect(out.confidence).toBe("medium");
+    expect(out.unsupportedClaims).toHaveLength(10);
+    expect(out.unsupportedClaims.every(c => c.length <= 400)).toBe(true);
+  });
+
   it("never claims high confidence when the audit fails, and still checks numbers", async () => {
     llm.invokeLLM.mockRejectedValue(new Error("down"));
     const out = await checkClaims({ suggestion: { ...answer, bullets: ["Revenue rose 37%."] }, brief });

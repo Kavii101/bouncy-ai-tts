@@ -66,6 +66,16 @@ export function registerInterviewStreamRoute(app: Express): void {
       }
     };
 
+    // Must be `res`: `req` is already destroyed once express.json has consumed
+    // the body, so its "close" never fires and a disconnected client would keep
+    // the upstream stream (and its token spend) running.
+    const upstream = new AbortController();
+    let aborted = false;
+    res.on("close", () => {
+      aborted = true;
+      upstream.abort();
+    });
+
     try {
       const row = await getBrief(workspaceId);
       if (!row || row.approved !== "approved") {
@@ -73,16 +83,6 @@ export function registerInterviewStreamRoute(app: Express): void {
         return;
       }
       const brief = briefSchema.parse(JSON.parse(row.briefJson));
-
-      // Must be `res`: `req` is already destroyed once express.json has consumed
-      // the body, so its "close" never fires and a disconnected client would
-      // keep the upstream stream (and its token spend) running.
-      const upstream = new AbortController();
-      let aborted = false;
-      res.on("close", () => {
-        aborted = true;
-        upstream.abort();
-      });
 
       const started = Date.now();
       let full = "";
@@ -114,6 +114,8 @@ export function registerInterviewStreamRoute(app: Express): void {
         sendError("The assistant returned an unexpected format. Try again.");
       }
     } catch (error) {
+      // A superseded answer or a closed tab is normal, not a failure.
+      if (aborted) return;
       interviewLog("live_stream_error", { workspaceId, errorType: error instanceof Error ? error.name : "unknown" });
       sendError("Live assist is temporarily unavailable. Try again.");
     }
