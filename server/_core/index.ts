@@ -6,6 +6,7 @@ import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { registerOAuthRoutes } from "./oauth";
 import { registerStorageProxy } from "./storageProxy";
 import { registerInterviewStreamRoute } from "../interview/liveStream";
+import { migrateDatabase } from "../db";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
@@ -30,6 +31,11 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 }
 
 async function startServer() {
+  if (process.env.MIGRATE_ON_BOOT === "true") {
+    await migrateDatabase();
+    console.log("[Database] Migrations applied");
+  }
+
   const app = express();
   const server = createServer(app);
   // Configure body parser with larger size limit for file uploads
@@ -65,4 +71,8 @@ async function startServer() {
   });
 }
 
-startServer().catch(console.error);
+startServer().catch(error => {
+  // Exit non-zero so the container restarts visibly rather than idling half-up.
+  console.error("[Startup] Fatal:", error);
+  process.exit(1);
+});

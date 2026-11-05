@@ -1,11 +1,36 @@
 import { and, desc, eq, gt, inArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
+import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import Database from "better-sqlite3";
+import path from "node:path";
 import { InsertUser, ttsArtifacts, ttsJobs, ttsUsageQuotas, ttsVoiceSettings, ttsWorkspaceMembers, ttsWorkspaces, users } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 
 let _db: ReturnType<typeof drizzle> | null = null;
-export async function getDb() { if (!_db && process.env.DATABASE_URL) { try { _db = drizzle(new Database(process.env.DATABASE_URL)); } catch (error) { console.warn("[Database] Failed to connect:", error); _db = null; } } return _db; }
+export async function getDb() {
+  if (!_db && process.env.DATABASE_URL) {
+    try {
+      const sqlite = new Database(process.env.DATABASE_URL);
+      sqlite.pragma("journal_mode = WAL"); // readers don't block the single writer
+      sqlite.pragma("busy_timeout = 5000");
+      _db = drizzle(sqlite);
+    } catch (error) {
+      console.warn("[Database] Failed to connect:", error);
+      _db = null;
+    }
+  }
+  return _db;
+}
+
+// Applies drizzle/sqlite migrations. Deliberately opt-in (MIGRATE_ON_BOOT) rather
+// than automatic: a dev database created with `drizzle-kit push` has no migration
+// journal, so running this against it would try to recreate existing tables.
+// Throws on failure so a deploy fails loudly instead of serving a schema-less app.
+export async function migrateDatabase(migrationsFolder = path.resolve("drizzle/sqlite")) {
+  const db = await getDb();
+  if (!db) throw new Error("DATABASE_URL is missing or the database could not be opened");
+  migrate(db, { migrationsFolder });
+}
 
 export async function upsertUser(user: InsertUser): Promise<void> {
   if (!user.openId) throw new Error("User openId is required for upsert");

@@ -5,8 +5,8 @@ if (!connectionString) {
   throw new Error("DATABASE_URL is required to run drizzle commands");
 }
 
-// Local dev uses SQLite (a single file). The production deploy path remains
-// MySQL; this is an uncommitted local adaptation for running on this machine.
+// SQLite in every environment. `drizzle/sqlite` is the live migration history;
+// the 0000-0002 files at the top of `drizzle/` are the retired MySQL schema.
 export default defineConfig({
   schema: "./drizzle/schema.ts",
   out: "./drizzle/sqlite",
