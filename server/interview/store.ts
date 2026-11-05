@@ -238,6 +238,18 @@ export async function listSqlCases(workspaceId: string) {
     .limit(20);
 }
 
+// Hard-deletes everything held for a workspace. Unlike deleteMaterial this also
+// removes the brief, which contains text derived from the résumé.
+export async function deleteWorkspaceData(workspaceId: string) {
+  const db = await getDb();
+  if (!db) throw new Error("DATABASE_UNAVAILABLE");
+  await db.delete(interviewMaterials).where(eq(interviewMaterials.workspaceId, workspaceId));
+  await db.delete(interviewBriefs).where(eq(interviewBriefs.workspaceId, workspaceId));
+  await db.delete(interviewPracticeTurns).where(eq(interviewPracticeTurns.workspaceId, workspaceId));
+  await db.delete(interviewSqlCases).where(eq(interviewSqlCases.workspaceId, workspaceId));
+  await db.delete(interviewAuditEvents).where(eq(interviewAuditEvents.workspaceId, workspaceId));
+}
+
 export async function addAudit(input: {
   workspaceId: string;
   userId: number;

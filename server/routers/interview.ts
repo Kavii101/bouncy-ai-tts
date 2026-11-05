@@ -90,6 +90,20 @@ export const interviewRouter = router({
     promptVersion: PROMPT_VERSION,
   })),
 
+  workspace: router({
+    deleteAll: publicProcedure.input(workspaceInput).mutation(async ({ ctx, input }) => {
+      requireEnabled();
+      try {
+        const { workspaceId, userId } = await resolveWorkspace(ctx, input.workspaceId);
+        await store.deleteWorkspaceData(workspaceId);
+        interviewLog("workspace_deleted", { workspaceId, userId });
+        return { success: true } as const;
+      } catch (error) {
+        mapError(error);
+      }
+    }),
+  }),
+
   materials: router({
     create: publicProcedure
       .input(
@@ -116,7 +130,7 @@ export const interviewRouter = router({
       requireEnabled();
       try {
         const { workspaceId } = await resolveWorkspace(ctx, input.workspaceId);
-        return store.listMaterials(workspaceId);
+        return await store.listMaterials(workspaceId);
       } catch (error) {
         mapError(error);
       }

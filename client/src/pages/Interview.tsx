@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { AlertCircle, CheckCircle2, Database, ExternalLink, FileText, Loader2, Mic, MonitorUp, CircleHelp, Radio, Shield, Sparkles, Square, Trash2, Upload, Volume2 } from "lucide-react";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -169,7 +170,10 @@ function SetupTab({ onBriefReady }: { onBriefReady?: () => void } = {}) {
     onSuccess: () => utils.interview.materials.list.invalidate(),
   });
   const generate = trpc.interview.brief.generate.useMutation({
-    onSuccess: () => { utils.interview.brief.get.invalidate(); onBriefReady?.(); },
+    onSuccess: () => { utils.interview.brief.get.invalidate(); utils.interview.practice.questions.invalidate(); onBriefReady?.(); },
+  });
+  const deleteAll = trpc.interview.workspace.deleteAll.useMutation({
+    onSuccess: () => { setSampleStatus(""); void utils.interview.invalidate(); },
   });
 
   const hasKind = (k: MaterialKind) => Boolean(materials.data?.some(m => m.kind === k));
@@ -354,6 +358,25 @@ function SetupTab({ onBriefReady }: { onBriefReady?: () => void } = {}) {
           {!materials.data?.length ? <p className="text-xs text-slate-400">Generate unlocks after your first material.</p> : !ready ? <p className="text-xs text-slate-400">You can generate now; adding the missing piece makes the brief evidence-linked.</p> : null}
           {generate.error ? <ErrorNote message={generate.error.message} /> : null}
           {generate.isSuccess ? <p className="text-sm text-emerald-600">Brief generated — taking you to review it.</p> : null}
+          <div className="border-t border-slate-100 pt-3">
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="ghost" size="sm" className="text-red-600 hover:text-red-700" disabled={deleteAll.isPending}><Trash2 className="mr-1.5 h-4 w-4" /> Delete all my data</Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete all your data?</AlertDialogTitle>
+                  <AlertDialogDescription>This permanently removes your materials, brief, practice history and SQL history from the server. It cannot be undone.</AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction className="bg-red-600 hover:bg-red-700" onClick={() => deleteAll.mutate({ workspaceId: WS })}>Delete everything</AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+            {deleteAll.isSuccess ? <p className="mt-1 text-xs text-slate-500">All your data has been deleted.</p> : null}
+            {deleteAll.error ? <ErrorNote message={deleteAll.error.message} /> : null}
+          </div>
         </CardContent>
       </Card>
       </div>
@@ -367,7 +390,7 @@ function BriefTab({ onPractice }: { onPractice?: () => void } = {}) {
   const utils = trpc.useUtils();
   const briefQuery = trpc.interview.brief.get.useQuery({ workspaceId: WS });
   const approve = trpc.interview.brief.approve.useMutation({
-    onSuccess: () => utils.interview.brief.get.invalidate(),
+    onSuccess: () => { utils.interview.brief.get.invalidate(); utils.interview.practice.questions.invalidate(); },
   });
 
   if (briefQuery.isLoading) return <Loading />;
