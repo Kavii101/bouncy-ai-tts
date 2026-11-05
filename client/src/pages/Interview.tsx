@@ -1,16 +1,18 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertCircle, CheckCircle2, Database, ExternalLink, FileText, Loader2, Mic, MonitorUp, CircleHelp, Radio, Shield, Sparkles, Square, Trash2, Upload, Volume2 } from "lucide-react";
+import { AlertCircle, ArrowLeft, CheckCircle2, Clock, Database, Download, ExternalLink, FileText, Loader2, Mic, MonitorUp, CircleHelp, Radio, RotateCcw, Shield, Sparkles, Square, Trash2, Upload, Volume2 } from "lucide-react";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { Link } from "wouter";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { LiveDot, Mascot, TopBar } from "@/components/brand";
+import { Flagged } from "@/components/Flagged";
 import { Walkthrough, useWalkthrough, type WalkStep } from "@/components/Walkthrough";
 import { speakNaturally, stopSpeaking } from "@/lib/speak";
 import { trpc } from "@/lib/trpc";
@@ -24,6 +26,7 @@ import {
   recentTurns,
   type TranscriptSegment,
 } from "@shared/interview/liveSession";
+import { buildSessionNotes, sessionStage, type StageTone } from "@shared/interview/sessionStage";
 import { extractStreamingFields, type StreamingFields } from "@shared/interview/streamingJson";
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "../../../server/routers";
@@ -87,6 +90,10 @@ function Workspace({ dialects, liveAssistEnabled }: { dialects: readonly string[
     const requested = new URLSearchParams(window.location.search).get("tab") ?? "";
     return (TAB_ORDER as readonly string[]).includes(requested) ? requested : "setup";
   });
+  const [liveEntered, setLiveEntered] = useState(false);
+  const [sessionRunning, setSessionRunning] = useState(false);
+  // Past the consent screen, the interview gets the whole page.
+  const focused = tab === "live" && liveEntered;
   const tour = useWalkthrough("interview", true);
   const steps: WalkStep[] = [
     { kicker: "Welcome", title: "Five minutes to ready", body: "This walkthrough follows the real flow: add your materials, approve a brief, practice, then go live or present. Use Next — the tabs move with you." },
@@ -102,14 +109,14 @@ function Workspace({ dialects, liveAssistEnabled }: { dialects: readonly string[
       <TopBar
         right={
           <div className="flex items-center gap-3">
-            <span className="hidden sm:inline-flex"><LiveDot live={liveAssistEnabled} label={liveAssistEnabled ? "Live assist ready" : "Prep mode"} /></span>
+            <span className="hidden sm:inline-flex"><LiveDot live={liveAssistEnabled} label={sessionRunning ? "Session running" : liveAssistEnabled ? "Live available" : "Prep mode"} /></span>
             <Button variant="ghost" size="sm" onClick={tour.start}><CircleHelp className="mr-1.5 h-4 w-4" /> Walkthrough</Button>
             <Button asChild variant="outline" size="sm" className="hidden sm:inline-flex"><Link href="/interview/present">Prompter</Link></Button>
           </div>
         }
       />
-      <div className="mx-auto max-w-5xl px-4 py-8 sm:px-6 lg:px-10">
-        <header className="mb-6 flex items-start gap-4">
+      <div className={focused ? "px-3 py-3 sm:px-4" : "mx-auto max-w-5xl px-4 py-8 sm:px-6 lg:px-10"}>
+        <header className={focused ? "hidden" : "mb-6 flex items-start gap-4"}>
           <Mascot pose="evidence" className="hidden h-20 w-16 shrink-0 md:block" />
           <div>
           <h1 className="text-[28px] font-semibold leading-tight tracking-[-0.02em]">Interview Copilot</h1>
@@ -120,7 +127,7 @@ function Workspace({ dialects, liveAssistEnabled }: { dialects: readonly string[
         </header>
 
         <Tabs value={tab} onValueChange={setTab}>
-          <TabsList className="mb-4 h-auto flex-wrap">
+          <TabsList className={focused ? "hidden" : "mb-4 h-auto flex-wrap"}>
             <TabsTrigger value="setup">Setup</TabsTrigger>
             <TabsTrigger value="brief">Brief</TabsTrigger>
             <TabsTrigger value="practice">Practice</TabsTrigger>
@@ -135,7 +142,7 @@ function Workspace({ dialects, liveAssistEnabled }: { dialects: readonly string[
           <TabsContent value="sql"><SqlTab dialects={dialects} /></TabsContent>
           <TabsContent value="present"><PresentTab /></TabsContent>
           {/* Stays mounted: leaving the tab must not end capture or lose the transcript. */}
-          {liveAssistEnabled ? <TabsContent value="live" forceMount className="data-[state=inactive]:hidden"><LiveTab /></TabsContent> : null}
+          {liveAssistEnabled ? <TabsContent value="live" forceMount className="data-[state=inactive]:hidden"><LiveTab onEntered={setLiveEntered} onRunning={setSessionRunning} onExit={() => setTab("brief")} goToBrief={() => setTab("brief")} /></TabsContent> : null}
         </Tabs>
       </div>
       <Walkthrough open={tour.open} steps={steps} onClose={tour.close} onStep={i => { const target = TAB_ORDER[Math.max(0, i - 1)]; if (i > 0 && target) setTab(target); }} />
@@ -864,8 +871,35 @@ function InterviewVideo({ stream, onShare }: { stream: MediaStream | null; onSha
   return <video ref={ref} autoPlay muted playsInline className="aspect-video w-full rounded-xl bg-black object-contain" aria-label="Shared interview tab video" />;
 }
 
-function LiveTab() {
+type LiveProps = { onEntered: (entered: boolean) => void; onRunning: (running: boolean) => void; onExit: () => void; goToBrief: () => void };
+
+const STAGE_STYLE: Record<StageTone, { dot: string; text: string }> = {
+  idle: { dot: "bg-slate-300", text: "text-slate-500" },
+  warn: { dot: "bg-amber-500", text: "text-amber-700" },
+  live: { dot: "animate-pulse bg-emerald-500", text: "text-emerald-700" },
+  busy: { dot: "animate-pulse bg-sky-500", text: "text-sky-700" },
+  done: { dot: "bg-emerald-500", text: "text-emerald-700" },
+};
+
+function downloadText(filename: string, text: string) {
+  const url = URL.createObjectURL(new Blob([text], { type: "text/markdown" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function LiveTab({ onEntered, onRunning, onExit, goToBrief }: LiveProps) {
   const [consent, setConsent] = useState(false);
+  const [autoAnswer, setAutoAnswer] = useState(true);
+  const autoAnswerRef = useRef(true);
+  const [pendingQuestion, setPendingQuestion] = useState("");
+  const [currentQuestion, setCurrentQuestion] = useState("");
+  const [turns, setTurns] = useState<Array<{ question: string; suggestion: LiveSuggestion }>>([]);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const [ended, setEnded] = useState<{ seconds: number } | null>(null);
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [suggestion, setSuggestion] = useState<LiveSuggestion | null>(null);
   const [streamPreview, setStreamPreview] = useState<StreamingFields | null>(null);
@@ -887,6 +921,9 @@ function LiveTab() {
   const transcribe = trpc.interview.live.transcribeSegment.useMutation();
   const suggest = trpc.interview.live.suggest.useMutation();
   const publisher = useAnswersPublisher();
+  const brief = trpc.interview.brief.get.useQuery({ workspaceId: WS });
+
+  useEffect(() => onEntered(consent), [consent, onEntered]);
 
   const setInterim = (text: string) => {
     interimRef.current = text;
@@ -981,12 +1018,44 @@ function LiveTab() {
   // Mirror listening state to the answers window.
   useEffect(() => {
     publisher.publish({ type: "status", listening });
+    onRunning(listening);
+    if (listening) {
+      setStartedAt(at => at ?? Date.now());
+      setEnded(null);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [listening]);
+
+  useEffect(() => {
+    if (startedAt === null || ended) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [startedAt, ended]);
+
+  const elapsedSeconds = startedAt === null ? 0 : Math.max(0, (now - startedAt) / 1000);
+  const writing = streamPreview !== null || suggest.isPending;
+  const stage = sessionStage({
+    micOn: capture.micState === "listening",
+    tabOn: capture.tabState === "listening",
+    hearing: Boolean(interim),
+    pendingQuestion: Boolean(pendingQuestion),
+    writing,
+    hasAnswer: suggestion !== null,
+  });
+  const stageStyle = STAGE_STYLE[stage.tone];
+  const briefApproved = brief.data?.approved === "approved";
+
+  const toggleAutoAnswer = (on: boolean) => {
+    autoAnswerRef.current = on;
+    setAutoAnswer(on);
+    if (on) setPendingQuestion("");
+  };
 
   const fireSuggest = async (question: string) => {
     inFlightRef.current = true;
     lastSuggestedRef.current = question;
+    setPendingQuestion("");
+    setCurrentQuestion(question);
     setSuggestion(null);
     setStreamPreview({ directAnswer: "", bullets: [] });
     const recent = recentTurns(segmentsRef.current);
@@ -1008,6 +1077,7 @@ function LiveTab() {
         final => {
           setSuggestion(final);
           setStreamPreview(null);
+          setTurns(prev => [...prev, { question, suggestion: final }]);
           publisher.publish({ type: "final", id: turnId, question, suggestion: final, at: Date.now() });
         },
         controller.signal,
@@ -1024,6 +1094,7 @@ function LiveTab() {
         if (superseded()) return;
         setSuggestion(res.suggestion);
         setStreamPreview(null);
+        setTurns(prev => [...prev, { question, suggestion: res.suggestion }]);
         publisher.publish({ type: "final", id: turnId, question, suggestion: res.suggestion, at: Date.now() });
       }
     } catch {
@@ -1045,6 +1116,11 @@ function LiveTab() {
     const timer = window.setInterval(() => {
       const plan = planSuggestion(segmentsRef.current, lastSuggestedRef.current, Date.now(), DEFAULT_LIVE_CONFIG);
       if (!plan.ready) return;
+      // Manual mode: hold the heard question until the candidate asks for help.
+      if (!autoAnswerRef.current) {
+        setPendingQuestion(plan.question);
+        return;
+      }
       if (!inFlightRef.current) {
         void fireSuggest(plan.question);
         return;
@@ -1058,9 +1134,33 @@ function LiveTab() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [listening]);
 
+  const endSession = () => {
+    capture.stop();
+    abortRef.current?.abort(SUPERSEDED);
+    setStreamPreview(null);
+    setPendingQuestion("");
+    setInterim("");
+    setEnded({ seconds: elapsedSeconds });
+  };
+
+  const downloadNotes = () => {
+    const notes = buildSessionNotes({
+      title: "Interview notes",
+      durationLabel: formatClock(ended?.seconds ?? elapsedSeconds),
+      turns: turns.map(t => ({ question: t.question, ...t.suggestion })),
+      transcript: segments.map(s => ({ source: s.source, text: s.text })),
+    });
+    downloadText("interview-notes.md", notes);
+  };
+
   const clearSession = () => {
     capture.stop();
     abortRef.current?.abort(SUPERSEDED);
+    setEnded(null);
+    setStartedAt(null);
+    setTurns([]);
+    setCurrentQuestion("");
+    setPendingQuestion("");
     setSegments([]);
     segmentsRef.current = [];
     lastSuggestedRef.current = null;
@@ -1090,107 +1190,162 @@ function LiveTab() {
     );
   }
 
+  const flagged = suggestion?.unsupportedClaims ?? [];
+  const markClass = "rounded-sm bg-amber-200/70 px-0.5 text-amber-950";
+
   return (
-    <div className="space-y-4">
-      {/* Slim toolbar — controls live here now, the stage below gets the space. */}
-      <div className="flex flex-wrap items-center gap-1.5 rounded-2xl border border-slate-950/[0.07] bg-white px-3 py-2 shadow-sm">
-        <span className={`mr-1 inline-flex items-center gap-2 text-xs font-semibold ${listening ? "text-red-600" : "text-slate-400"}`} role="status">
-          <span className={`size-2 rounded-full ${listening ? "animate-pulse bg-red-500" : "bg-slate-300"}`} />{listening ? "Listening" : "Idle"}
-        </span>
-        <Button variant={capture.micState === "listening" ? "secondary" : "default"} size="sm" onClick={() => capture.startMic()} disabled={capture.micState === "listening"}>
-          <Mic className="mr-1.5 h-4 w-4" /> {capture.micState === "listening" ? "Mic on" : "My mic"}
-        </Button>
-        <Button variant={capture.tabState === "listening" ? "secondary" : "default"} size="sm" onClick={() => capture.startTab()} disabled={capture.tabState === "listening"}>
-          <MonitorUp className="mr-1.5 h-4 w-4" /> {capture.tabState === "listening" ? "Tab shared" : "Share interview"}
-        </Button>
-        <Button variant="ghost" size="sm" onClick={() => capture.stop()} disabled={!listening}><Square className="mr-1.5 h-4 w-4" /> Stop</Button>
-        <Button variant="ghost" size="sm" onClick={clearSession}><Trash2 className="mr-1.5 h-4 w-4" /> Clear</Button>
-        <span className="ml-auto flex items-center gap-1.5">
+    <div className="space-y-3">
+      {/* One bar: where things stand, then the controls. */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-2xl border border-slate-950/[0.07] bg-white px-3 py-2 shadow-sm">
+        <Button variant="ghost" size="sm" onClick={onExit}><ArrowLeft className="mr-1.5 h-4 w-4" /> Back to prep</Button>
+        <div className="min-w-0" role="status" data-stage={stage.stage}>
+          <p className={`flex items-center gap-2 text-sm font-semibold ${stageStyle.text}`}><span className={`size-2 shrink-0 rounded-full ${stageStyle.dot}`} />{stage.label}</p>
+          <p className="text-xs text-slate-500">{stage.detail}</p>
+        </div>
+        {startedAt !== null ? (
+          <span className="tnum inline-flex items-center gap-1 text-xs text-slate-500" aria-label="Session time"><Clock className="h-3.5 w-3.5" /> {formatClock(ended ? ended.seconds : elapsedSeconds)}</span>
+        ) : null}
+        <div className="ml-auto flex flex-wrap items-center gap-1.5">
+          <label className="mr-1 flex items-center gap-1.5 text-xs text-slate-600">
+            <Switch checked={autoAnswer} onCheckedChange={toggleAutoAnswer} aria-label="Auto-answer" /> Auto-answer
+          </label>
+          <Button variant={capture.micState === "listening" ? "secondary" : "default"} size="sm" onClick={() => capture.startMic()} disabled={capture.micState === "listening"}>
+            <Mic className="mr-1.5 h-4 w-4" /> {capture.micState === "listening" ? "Mic on" : "My mic"}
+          </Button>
+          <Button variant={capture.tabState === "listening" ? "secondary" : "default"} size="sm" onClick={() => capture.startTab()} disabled={capture.tabState === "listening"}>
+            <MonitorUp className="mr-1.5 h-4 w-4" /> {capture.tabState === "listening" ? "Tab shared" : "Share interview"}
+          </Button>
           <Button variant="outline" size="sm" onClick={() => window.open("/interview/answers", "interview-answers", "noopener")}><ExternalLink className="mr-1.5 h-4 w-4" /> Answers window</Button>
           <Button variant="outline" size="sm" onClick={() => window.open("/interview/subtitles?popout=1", "interview-subtitles", "popup,width=1100,height=420")}><ExternalLink className="mr-1.5 h-4 w-4" /> Subtitles</Button>
-        </span>
-        {capture.error ? <p className="flex w-full items-center gap-1.5 pt-1 text-xs text-red-600"><AlertCircle className="h-3.5 w-3.5" /> {capture.error}</p> : null}
-        {status ? <p className="w-full pt-0.5 text-xs text-slate-400">{status}</p> : null}
-      </div>
-
-      {/* Stage: interview picture (half) + what to say (half). */}
-      <div className="grid items-start gap-4 xl:grid-cols-2">
-        <Card className="overflow-hidden p-0">
-          <div className="flex items-center justify-between px-4 py-3">
-            <p className="text-sm font-semibold text-slate-700">Interview</p>
-            <span className="text-xs text-slate-400">{capture.tabStream ? "Shared tab · picture only" : "Not shared yet"}</span>
-          </div>
-          <div className="px-3 pb-3"><InterviewVideo stream={capture.tabStream} onShare={() => capture.startTab()} /></div>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg flex items-center gap-2">
-              <Radio className="h-5 w-5" /> What to say
-              {suggest.isPending || streamPreview ? <Loader2 className="h-4 w-4 animate-spin text-slate-400" /> : null}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3 text-sm">
-            {!suggestion && streamPreview ? (
-              <div className="space-y-2">
-                <p className="text-base font-medium text-slate-800">{streamPreview.directAnswer || <span className="text-slate-400">…</span>}</p>
-                {streamPreview.bullets.length ? (
-                  <ul className="list-disc pl-5 text-slate-600">{streamPreview.bullets.map((b, i) => <li key={i}>{b}</li>)}</ul>
-                ) : null}
-                <p className="text-xs text-slate-400">streaming…</p>
-              </div>
-            ) : suggestion ? (
-              <>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant={suggestion.confidence === "high" ? "default" : "secondary"}>confidence: {suggestion.confidence}</Badge>
-                  {suggestion.shouldVerify ? <Badge variant="destructive">verify before using</Badge> : null}
-                </div>
-                <p className="text-base font-medium text-slate-800">{suggestion.directAnswer}</p>
-                <FeedbackList title="Say this" items={suggestion.bullets} />
-                {suggestion.evidence.length ? (
-                  <div>
-                    <p className="font-medium text-slate-700">Evidence</p>
-                    <ul className="list-disc pl-5 text-slate-600">{suggestion.evidence.map((e, i) => <li key={i}><Badge variant="outline" className="mr-1">{e.evidenceId}</Badge>{e.claim}</li>)}</ul>
-                  </div>
-                ) : null}
-                {suggestion.unsupportedClaims.length ? (
-                  <div className="rounded-md bg-amber-50 p-2 text-amber-800">
-                    <p className="font-medium">Not in your evidence — don't state as fact</p>
-                    <ul className="list-disc pl-5">{suggestion.unsupportedClaims.map((c, i) => <li key={i}>{c}</li>)}</ul>
-                  </div>
-                ) : null}
-                {suggestion.followUpQuestion ? <p className="text-slate-500">Clarifying q: {suggestion.followUpQuestion}</p> : null}
-              </>
-            ) : (
-              <p className="text-slate-500">Suggestions appear automatically after the interviewer finishes a question — watch their face on the left, glance here, and answer.</p>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      <div className="rounded-2xl border border-slate-950/[0.07] bg-white px-4 py-3 shadow-sm">
-        <Label className="text-xs text-slate-500">Ask manually (solo practice / testing — no interviewer needed)</Label>
-        <div className="mt-1.5 flex gap-2">
-          <Input
-            value={manualQuestion}
-            onChange={e => setManualQuestion(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === "Enter" && manualQuestion.trim() && !inFlightRef.current) {
-                void fireSuggest(manualQuestion.trim());
-                setManualQuestion("");
-              }
-            }}
-            placeholder="e.g. Tell me about a time you used SQL to drive a decision"
-          />
-          <Button size="sm" disabled={!manualQuestion.trim() || inFlightRef.current} onClick={() => { void fireSuggest(manualQuestion.trim()); setManualQuestion(""); }}>
-            <Radio className="mr-2 h-4 w-4" /> Get suggestion
-          </Button>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button variant="destructive" size="sm" disabled={!listening}><Square className="mr-1.5 h-4 w-4" /> End session</Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>End this interview session?</AlertDialogTitle>
+                <AlertDialogDescription>This stops your mic and the shared tab. Your transcript and answers stay here so you can download them.</AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogAction className="bg-transparent text-red-700 hover:bg-red-50" onClick={endSession}>Yes, end it</AlertDialogAction>
+                <AlertDialogCancel className="bg-slate-900 text-white hover:bg-slate-800 hover:text-white">Keep going</AlertDialogCancel>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </div>
+        {!brief.isLoading && !briefApproved ? (
+          <p className="flex w-full items-center gap-1.5 text-xs text-amber-700"><AlertCircle className="h-3.5 w-3.5" /> Answers need an approved brief. <button type="button" className="font-medium underline" onClick={goToBrief}>Go to your brief</button></p>
+        ) : null}
+        {capture.error ? <p className="flex w-full items-center gap-1.5 text-xs text-red-600"><AlertCircle className="h-3.5 w-3.5" /> {capture.error}</p> : null}
+        {status ? <p className="w-full text-xs text-slate-400">{status}</p> : null}
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <TranscriptColumn title="You (mic)" source="candidate" segments={segments} />
-        <TranscriptColumn title="Interviewer (tab)" source="interviewer" segments={segments} interim={interim} />
+      {ended ? (
+        <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+          <div>
+            <p className="text-sm font-semibold text-emerald-900">Session ended</p>
+            <p className="text-xs text-emerald-800">{formatClock(ended.seconds)} · {turns.length} {turns.length === 1 ? "question" : "questions"} answered. Your notes are only in this browser.</p>
+          </div>
+          <div className="ml-auto flex gap-1.5">
+            <Button size="sm" onClick={downloadNotes}><Download className="mr-1.5 h-4 w-4" /> Download notes</Button>
+            <Button variant="outline" size="sm" onClick={clearSession}><RotateCcw className="mr-1.5 h-4 w-4" /> Start new session</Button>
+          </div>
+        </div>
+      ) : null}
+
+      {/* The interviewer on the left, what to say taking most of the page. */}
+      <div className="grid items-start gap-3 lg:grid-cols-[minmax(260px,1fr)_minmax(0,2.4fr)]">
+        <div className="space-y-3">
+          <Card className="overflow-hidden p-0">
+            <div className="flex items-center justify-between px-4 py-2.5">
+              <p className="text-sm font-semibold text-slate-700">Interview</p>
+              <span className="text-xs text-slate-400">{capture.tabStream ? "Shared tab · picture only" : "Not shared yet"}</span>
+            </div>
+            <div className="px-3 pb-3"><InterviewVideo stream={capture.tabStream} onShare={() => capture.startTab()} /></div>
+          </Card>
+          <TranscriptColumn title="Interviewer (tab)" source="interviewer" segments={segments} interim={interim} />
+          <TranscriptColumn title="You (mic)" source="candidate" segments={segments} />
+        </div>
+
+        <div className="space-y-3">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <Radio className="h-5 w-5" /> What to say
+                {writing ? <Loader2 className="h-4 w-4 animate-spin text-slate-400" /> : null}
+              </CardTitle>
+              {currentQuestion ? <CardDescription>{currentQuestion}</CardDescription> : null}
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm">
+              {pendingQuestion ? (
+                <div className="flex flex-wrap items-center gap-2 rounded-md bg-amber-50 p-2.5 text-amber-900">
+                  <p className="min-w-0 flex-1">{pendingQuestion}</p>
+                  <Button size="sm" disabled={writing} onClick={() => void fireSuggest(pendingQuestion)}><Radio className="mr-1.5 h-4 w-4" /> Answer now</Button>
+                </div>
+              ) : null}
+              {streamPreview ? (
+                <div className="space-y-2">
+                  <p className="text-xl font-medium leading-snug text-slate-800">{streamPreview.directAnswer || <span className="text-slate-400">…</span>}</p>
+                  {streamPreview.bullets.length ? (
+                    <ul className="list-disc space-y-1 pl-5 text-base text-slate-600">{streamPreview.bullets.map((b, i) => <li key={i}>{b}</li>)}</ul>
+                  ) : null}
+                </div>
+              ) : suggestion ? (
+                <>
+                  <p className="text-xl font-medium leading-snug text-slate-800"><Flagged text={suggestion.directAnswer} phrases={flagged} markClassName={markClass} /></p>
+                  {suggestion.bullets.length ? (
+                    <ul className="list-disc space-y-1 pl-5 text-base text-slate-700">{suggestion.bullets.map((b, i) => <li key={i}><Flagged text={b} phrases={flagged} markClassName={markClass} /></li>)}</ul>
+                  ) : null}
+                  {suggestion.addYourOwn ? (
+                    <div className="rounded-md bg-sky-50 p-2.5 text-sky-900">
+                      <p className="font-medium">Add in your own words</p>
+                      <p>{suggestion.addYourOwn}</p>
+                    </div>
+                  ) : null}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant={suggestion.confidence === "high" ? "default" : "secondary"}>confidence: {suggestion.confidence}</Badge>
+                    {suggestion.shouldVerify ? <Badge variant="destructive">verify before using</Badge> : null}
+                  </div>
+                  {flagged.length ? (
+                    <details className="rounded-md bg-amber-50 p-2.5 text-amber-900">
+                      <summary className="cursor-pointer font-medium">{flagged.length} {flagged.length === 1 ? "thing" : "things"} not in your evidence — don't state as fact</summary>
+                      <ul className="mt-1 list-disc pl-5">{flagged.map((c, i) => <li key={i}>{c}</li>)}</ul>
+                    </details>
+                  ) : null}
+                  {suggestion.evidence.length ? (
+                    <details className="text-slate-600">
+                      <summary className="cursor-pointer font-medium text-slate-700">Evidence used ({suggestion.evidence.length})</summary>
+                      <ul className="mt-1 list-disc pl-5">{suggestion.evidence.map((e, i) => <li key={i}><Badge variant="outline" className="mr-1">{e.evidenceId}</Badge>{e.claim}</li>)}</ul>
+                    </details>
+                  ) : null}
+                  {suggestion.followUpQuestion ? <p className="text-slate-500">Clarifying q: {suggestion.followUpQuestion}</p> : null}
+                </>
+              ) : !pendingQuestion ? (
+                <p className="py-8 text-center text-slate-500">{autoAnswer ? "Your answer appears here as soon as the interviewer finishes a question." : "Heard questions wait here until you press Answer now."}</p>
+              ) : null}
+            </CardContent>
+          </Card>
+
+          <div className="rounded-2xl border border-slate-950/[0.07] bg-white px-4 py-3 shadow-sm">
+            <Label className="text-xs text-slate-500">Test without an interviewer, or type a question you missed</Label>
+            <div className="mt-1.5 flex gap-2">
+              <Input
+                value={manualQuestion}
+                onChange={e => setManualQuestion(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === "Enter" && manualQuestion.trim() && !inFlightRef.current) {
+                    void fireSuggest(manualQuestion.trim());
+                    setManualQuestion("");
+                  }
+                }}
+                placeholder="e.g. Tell me about a time you used SQL to drive a decision"
+              />
+              <Button size="sm" disabled={!manualQuestion.trim() || inFlightRef.current} onClick={() => { void fireSuggest(manualQuestion.trim()); setManualQuestion(""); }}>
+                <Radio className="mr-2 h-4 w-4" /> Get suggestion
+              </Button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -1201,7 +1356,7 @@ function TranscriptColumn({ title, source, segments, interim }: { title: string;
   return (
     <Card>
       <CardHeader className="pb-2"><CardTitle className="text-sm text-slate-600">{title}</CardTitle></CardHeader>
-      <CardContent className="max-h-36 space-y-1.5 overflow-y-auto text-sm">
+      <CardContent className="max-h-44 space-y-1.5 overflow-y-auto text-sm">
         {rows.map(s => (
           <p key={s.id} className="text-slate-700">
             {s.language && s.language !== "English" ? (

@@ -1,4 +1,5 @@
 import { EmptyStage, LiveDot } from "@/components/brand";
+import { Flagged } from "@/components/Flagged";
 import { Walkthrough, useWalkthrough } from "@/components/Walkthrough";
 import { trpc } from "@/lib/trpc";
 import { useAnswersReceiver } from "@/hooks/useAnswersChannel";
@@ -69,6 +70,8 @@ export default function InterviewAnswers() {
   );
 }
 
+const MARK = "rounded-sm bg-amber-400/25 px-0.5 text-amber-100";
+
 function CurrentAnswer({ entry }: { entry: AnswerEntry }) {
   return (
     <div className="cue-in">
@@ -83,7 +86,7 @@ function CurrentAnswer({ entry }: { entry: AnswerEntry }) {
       </div>
 
       <p className="mt-3 text-2xl font-semibold leading-snug text-white md:text-3xl">
-        {entry.directAnswer || <span className="text-slate-600">…</span>}
+        {entry.directAnswer ? <Flagged text={entry.directAnswer} phrases={entry.unsupportedClaims} markClassName={MARK} /> : <span className="text-slate-600">…</span>}
       </p>
 
       {entry.bullets.length ? (
@@ -91,10 +94,17 @@ function CurrentAnswer({ entry }: { entry: AnswerEntry }) {
           {entry.bullets.map((b, i) => (
             <li key={i} className="flex gap-3 text-lg leading-snug text-slate-100 md:text-xl">
               <span className="mt-1 text-emerald-400">▸</span>
-              <span>{b}</span>
+              <span><Flagged text={b} phrases={entry.unsupportedClaims} markClassName={MARK} /></span>
             </li>
           ))}
         </ul>
+      ) : null}
+
+      {entry.addYourOwn ? (
+        <div className="mt-6 rounded-lg border border-sky-500/30 bg-sky-500/10 p-3 text-sm text-sky-200">
+          <p className="font-semibold">Add in your own words:</p>
+          <p className="mt-1">{entry.addYourOwn}</p>
+        </div>
       ) : null}
 
       {entry.unsupportedClaims.length ? (
