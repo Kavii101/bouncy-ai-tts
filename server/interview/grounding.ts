@@ -33,7 +33,8 @@ export function groundSuggestion(
   const shouldVerify =
     suggestion.shouldVerify ||
     unsupportedClaims.length > 0 ||
-    kept.length === 0 ||
+    // Small talk has no bullets and needs no evidence, so there is nothing to verify.
+    (kept.length === 0 && suggestion.bullets.length > 0) ||
     leansOnUnverified;
 
   return { ...suggestion, evidence: kept, unsupportedClaims, shouldVerify };

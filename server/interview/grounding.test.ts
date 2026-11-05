@@ -71,3 +71,10 @@ describe("grounding", () => {
     expect(cappedConfidence({ ...base, confidence: "high" })).toBe("high");
   });
 });
+
+describe("small talk", () => {
+  it("does not ask the candidate to verify a greeting", () => {
+    const greeting = { directAnswer: "Yes, I can hear you well, thanks.", bullets: [], evidence: [], assumptions: [], unsupportedClaims: [], shouldVerify: false, confidence: "high" as const };
+    expect(groundSuggestion(greeting, new Set()).shouldVerify).toBe(false);
+  });
+});

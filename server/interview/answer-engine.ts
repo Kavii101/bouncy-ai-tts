@@ -5,6 +5,7 @@
 
 import { strictOutputSchema } from "./strictSchema";
 import { invokeLLM } from "../_core/llm";
+import { tokenize } from "../../shared/interview/liveSession";
 import { approvedEvidenceIds, cappedConfidence, groundSuggestion } from "./grounding";
 import {
   MalformedModelOutput,
@@ -18,11 +19,33 @@ import {
   type Brief,
 } from "./schemas";
 
-// A compact, relevant slice of the brief for a given question — a few
-// requirements and evidence items, not the entire profile.
-function relevantContext(brief: Brief, limit = 6): string {
-  const requirements = brief.requirements.slice(0, limit).map(r => `- [${r.id}] (${r.category}) ${r.text}`);
-  const evidence = brief.evidence.slice(0, limit).map(e => `- [${e.id}] ${e.verified ? "verified" : "unverified"}: ${e.claim}`);
+const STOPWORDS = new Set(("a an and are as at be but by can could did do does for from had has have how i if in into is it me my of on or our "
+  + "so tell that the their then there they this to was we were what when where which who why will with would you your about").split(" "));
+
+function keywords(text: string): Set<string> {
+  return new Set(tokenize(text).filter(t => t.length > 2 && !STOPWORDS.has(t)));
+}
+
+// Most relevant first, keeping the original order for ties so that with no
+// signal (an empty or generic question) the brief's own priority order stands.
+export function rankByRelevance<T>(items: T[], textOf: (item: T) => string, question: string): T[] {
+  const wanted = keywords(question);
+  return items
+    .map((item, index) => {
+      const words = keywords(textOf(item));
+      let score = 0;
+      wanted.forEach(w => { if (words.has(w)) score++; });
+      return { item, index, score };
+    })
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .map(entry => entry.item);
+}
+
+// A compact slice of the brief chosen FOR THIS QUESTION. Taking the first few
+// items regardless of the question hid anything further down the résumé.
+export function relevantContext(brief: Brief, question = "", limit = 14): string {
+  const requirements = rankByRelevance(brief.requirements, r => r.text, question).slice(0, limit).map(r => `- [${r.id}] (${r.category}) ${r.text}`);
+  const evidence = rankByRelevance(brief.evidence, e => e.claim, question).slice(0, limit).map(e => `- [${e.id}] ${e.verified ? "verified" : "unverified"}: ${e.claim}`);
   return [
     `ROLE_SUMMARY:\n${brief.roleSummary}`,
     `\nREQUIREMENTS:\n${requirements.join("\n")}`,
@@ -45,7 +68,7 @@ export async function scoreAnswer(params: {
   ].join(" ");
 
   const user = [
-    relevantContext(params.brief),
+    relevantContext(params.brief, params.question),
     `\nQUESTION (${params.category}):\n${params.question}`,
     `\nCANDIDATE_ANSWER:\n${params.answer}`,
   ].join("\n");
@@ -71,8 +94,16 @@ export type RecentTurn = { source: "candidate" | "interviewer"; text: string };
 export const SUGGEST_SYSTEM = [
   "You help a candidate organize a truthful answer during a permitted interview.",
   "Return a short outline (3-5 bullets), the evidence ids it draws on, assumptions, an optional clarifying question, and a confidence/grounding label.",
-  "Put the single most useful sentence first in directAnswer, then the bullets, so the candidate can start speaking immediately.",
+  "Write everything as words the candidate can say out loud: first person, plain spoken English, no headings, no labels like 'Situation:', and never refer to 'the candidate' or 'the resume'.",
+  "Put the single most useful sentence first in directAnswer, then the bullets, so the candidate can start speaking immediately. Answer the question actually asked, using the most specific matching evidence rather than a general summary of the career.",
+  "For 'tell me about a time' questions, make the bullets follow one real story in order: the situation, what I did, and the result. Quote a number only if it appears in the evidence.",
+  "Use RECENT_TRANSCRIPT to understand what 'that', 'it' or a follow-up refers to, and do not repeat a point the candidate has just made.",
+  "If the interviewer is making small talk or handling logistics rather than asking a question (for example a greeting, or 'can you hear me?'), reply with one short natural sentence, no bullets, and no evidence.",
   "Never claim a skill, employer, project, metric, or outcome that is not in the approved evidence.",
+  "That rule also covers softer additions: do not invent motives, feelings, how people reacted, what you personally did, or results such as 'improved trust', 'ensured compliance' or 'stakeholder confidence'. If the evidence does not say it happened, leave it out.",
+  "Keep the specifics the evidence gives (names, numbers, durations, what actually went wrong) and state them plainly rather than softening them.",
+  "Fewer true bullets beat more padded ones: use two bullets if the evidence only supports two. Never add a closing line about what the story demonstrates or what you can do.",
+  "Set confidence to high only if every sentence is directly supported by the evidence.",
   "If the question cannot be answered from the profile, say so and offer a truthful bridge ('I have not done X directly, but I have done Y...').",
   "If the interviewer repeats or rephrases the current question, treat it as the same question and refine your answer rather than starting over.",
   "The question may be asked in another language; understand it, but always write your answer in English.",
@@ -84,7 +115,7 @@ export function buildSuggestUser(brief: Brief, question: string, recent?: Recent
     .map(t => `${t.source === "interviewer" ? "INTERVIEWER" : "CANDIDATE"}: ${t.text}`)
     .join("\n");
   return [
-    relevantContext(brief),
+    relevantContext(brief, question),
     transcript ? `\nRECENT_TRANSCRIPT (data):\n${transcript}` : "",
     `\nCURRENT_QUESTION:\n${question}`,
   ].join("\n");
