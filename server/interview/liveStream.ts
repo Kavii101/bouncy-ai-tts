@@ -73,8 +73,11 @@ export function registerInterviewStreamRoute(app: Express): void {
       }
       const brief = briefSchema.parse(JSON.parse(row.briefJson));
 
+      // Must be `res`: `req` is already destroyed once express.json has consumed
+      // the body, so its "close" never fires and a disconnected client would
+      // keep the upstream stream (and its token spend) running.
       let aborted = false;
-      req.on("close", () => {
+      res.on("close", () => {
         aborted = true;
       });
 
