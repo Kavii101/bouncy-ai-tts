@@ -4,6 +4,8 @@ import {
   deserializePresent,
   emptyPresentState,
   reducePresent,
+  cueElapsedSeconds,
+  elapsedSeconds,
   serializePresent,
 } from "@shared/interview/presentChannel";
 
@@ -83,5 +85,18 @@ describe("present channel reducer", () => {
     expect(deserializePresent(serializePresent(s))).toEqual(s);
     expect(deserializePresent("not json")).toEqual(emptyPresentState());
     expect(deserializePresent(null)).toEqual(emptyPresentState());
+  });
+});
+
+describe("per-cue timer", () => {
+  const deck = { title: "t", totalSeconds: 60, cues: [1, 2].map(n => ({ id: `c${n}`, title: "x", say: "y", transition: "", seconds: 30, notes: "" })) };
+
+  it("restarts on a new cue while the total keeps running", () => {
+    let s = reducePresent(emptyPresentState(), { type: "load", deck, at: 1 });
+    s = { ...reducePresent(s, { type: "setRunning", running: true }), startedAt: Date.now() - 10_000 };
+    s = reducePresent(s, { type: "advance" });
+    const later = (s.cueStartedAt as number) + 4000;
+    expect(cueElapsedSeconds(s, later)).toBe(4);
+    expect(elapsedSeconds(s, later)).toBeGreaterThan(4);
   });
 });

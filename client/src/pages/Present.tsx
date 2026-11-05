@@ -8,7 +8,7 @@ import { useDualStreamCapture, type PartialUtterance, type Utterance } from "@/h
 import { trpc } from "@/lib/trpc";
 import { alignSpeech, buildScrollScript, fillInFor } from "@shared/interview/scrollFollow";
 import type { PresentationDeck } from "@shared/interview/presentation";
-import { elapsedSeconds } from "@shared/interview/presentChannel";
+import { cueElapsedSeconds, elapsedSeconds } from "@shared/interview/presentChannel";
 import { formatClock } from "@shared/interview/presentation";
 
 // Full-screen presentation prompter. Shows the current cue large, the next cue
@@ -32,12 +32,12 @@ export default function Present() {
   const cue = deck?.cues[state.index] ?? null;
   const next = deck?.cues[state.index + 1] ?? null;
   const elapsed = elapsedSeconds(state, now);
-  const spentBefore = deck ? deck.cues.slice(0, state.index).reduce((a, c) => a + c.seconds, 0) : 0;
-  const cueElapsed = Math.max(0, elapsed - spentBefore);
+  const cueElapsed = cueElapsedSeconds(state, now);
   const overBudget = cue ? cueElapsed > cue.seconds : false;
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (tour.open) return; // the walkthrough owns the arrow keys while it is up
       if (e.key === " " || e.key === "ArrowRight") {
         e.preventDefault();
         send({ type: "advance" });
@@ -48,7 +48,7 @@ export default function Present() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [send]);
+  }, [send, tour.open]);
 
   if (!deck || !cue) {
     return (

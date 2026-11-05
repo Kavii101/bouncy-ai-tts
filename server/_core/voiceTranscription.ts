@@ -71,6 +71,7 @@ export type TranscribeBytesOptions = {
 };
 
 const MAX_AUDIO_BYTES = 16 * 1024 * 1024;
+const TRANSCRIBE_TIMEOUT_MS = 30_000;
 
 // Known Whisper/ASR hallucination artifacts. Models like whisper-1 invent these
 // training-data phrases when they hear silence, breath, or room noise (the
@@ -191,6 +192,7 @@ export async function transcribeBytes(
       method: "POST",
       headers: { authorization: `Bearer ${ENV.forgeApiKey}`, "Accept-Encoding": "identity" },
       body: formData,
+      signal: AbortSignal.timeout(TRANSCRIBE_TIMEOUT_MS),
     });
 
     if (!response.ok) {

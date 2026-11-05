@@ -160,11 +160,8 @@ function gateStream(
     }
   }, 100);
 
-  stream.getAudioTracks().forEach(t => {
-    t.onended = () => onError(`${source} audio stopped`);
-  });
-
-  return () => {
+  const teardown = () => {
+    if (stopped) return;
     stopped = true;
     window.clearInterval(tick);
     flush();
@@ -176,6 +173,16 @@ function gateStream(
     }
     stream.getTracks().forEach(t => t.stop());
   };
+
+  // Fires when the browser ends the stream, e.g. its own "Stop sharing" button.
+  stream.getAudioTracks().forEach(t => {
+    t.onended = () => {
+      teardown();
+      onError(source === "interviewer" ? "Sharing stopped. Press Share interview to resume." : "Your microphone stopped. Press My mic to resume.");
+    };
+  });
+
+  return teardown;
 }
 
 export function useDualStreamCapture(handlers: CaptureHandlers) {

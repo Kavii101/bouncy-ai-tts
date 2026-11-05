@@ -51,7 +51,7 @@ describe("planSuggestion", () => {
 
   it("waits while the interviewer is still speaking", () => {
     const segs = [seg("interviewer", "tell me about", 10_000)];
-    const plan = planSuggestion(segs, null, 10_000 + 300, cfg); // < pauseMs
+    const plan = planSuggestion(segs, null, 10_000 + cfg.pauseMs - 100, cfg); // < pauseMs
     expect(plan.ready).toBe(false);
     expect(plan.reason).toBe("speaking");
   });

@@ -13,6 +13,9 @@ export type PresentState = {
   running: boolean;
   startedAt: number | null;
   elapsedMs: number;
+  /** When the current cue began (while running), and time banked on it before a pause. */
+  cueStartedAt: number | null;
+  cueElapsedMs: number;
   updatedAt: number;
 };
 
@@ -26,7 +29,19 @@ export type PresentMessage =
   | { type: "clear" };
 
 export function emptyPresentState(): PresentState {
-  return { deck: null, index: 0, running: false, startedAt: null, elapsedMs: 0, updatedAt: 0 };
+  return { deck: null, index: 0, running: false, startedAt: null, elapsedMs: 0, cueStartedAt: null, cueElapsedMs: 0, updatedAt: 0 };
+}
+
+export function cueElapsedSeconds(state: PresentState, now: number): number {
+  const live = state.running && state.cueStartedAt ? Math.max(0, now - state.cueStartedAt) : 0;
+  return Math.floor((state.cueElapsedMs + live) / 1000);
+}
+
+// Moving to a different cue restarts that cue's clock; the total keeps running.
+function moveTo(state: PresentState, index: number): PresentState {
+  const now = Date.now();
+  if (index === state.index) return { ...state, updatedAt: now };
+  return { ...state, index, cueElapsedMs: 0, cueStartedAt: state.running ? now : null, updatedAt: now };
 }
 
 export function elapsedSeconds(state: PresentState, now: number): number {
@@ -38,21 +53,22 @@ export function reducePresent(state: PresentState, msg: PresentMessage): Present
   const total = state.deck?.cues.length ?? 0;
   switch (msg.type) {
     case "load":
-      return { deck: msg.deck, index: 0, running: false, startedAt: null, elapsedMs: 0, updatedAt: msg.at };
+      return { ...emptyPresentState(), deck: msg.deck, updatedAt: msg.at };
     case "advance":
-      return { ...state, index: clampIndex(state.index + 1, total), updatedAt: Date.now() };
+      return moveTo(state, clampIndex(state.index + 1, total));
     case "back":
-      return { ...state, index: clampIndex(state.index - 1, total), updatedAt: Date.now() };
+      return moveTo(state, clampIndex(state.index - 1, total));
     case "goto":
-      return { ...state, index: clampIndex(msg.index, total), updatedAt: Date.now() };
+      return moveTo(state, clampIndex(msg.index, total));
     case "setRunning": {
       const now = Date.now();
-      if (msg.running) return { ...state, running: true, startedAt: now, updatedAt: now };
+      if (msg.running) return { ...state, running: true, startedAt: now, cueStartedAt: now, updatedAt: now };
       const live = state.startedAt ? Math.max(0, now - state.startedAt) : 0;
-      return { ...state, running: false, startedAt: null, elapsedMs: state.elapsedMs + live, updatedAt: now };
+      const cueLive = state.cueStartedAt ? Math.max(0, now - state.cueStartedAt) : 0;
+      return { ...state, running: false, startedAt: null, elapsedMs: state.elapsedMs + live, cueStartedAt: null, cueElapsedMs: state.cueElapsedMs + cueLive, updatedAt: now };
     }
     case "restart":
-      return { ...state, index: 0, running: false, startedAt: null, elapsedMs: 0, updatedAt: Date.now() };
+      return { ...emptyPresentState(), deck: state.deck, updatedAt: Date.now() };
     case "clear":
       return emptyPresentState();
     default:
@@ -82,6 +98,8 @@ export function deserializePresent(raw: string | null | undefined): PresentState
       running: Boolean(parsed.running),
       startedAt: typeof parsed.startedAt === "number" ? parsed.startedAt : null,
       elapsedMs: typeof parsed.elapsedMs === "number" ? parsed.elapsedMs : 0,
+      cueStartedAt: typeof parsed.cueStartedAt === "number" ? parsed.cueStartedAt : null,
+      cueElapsedMs: typeof parsed.cueElapsedMs === "number" ? parsed.cueElapsedMs : 0,
       updatedAt: typeof parsed.updatedAt === "number" ? parsed.updatedAt : 0,
     };
   } catch {

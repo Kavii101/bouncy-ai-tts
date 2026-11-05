@@ -32,6 +32,10 @@ type LiveSuggestion = inferRouterOutputs<AppRouter>["interview"]["live"]["sugges
 
 const WS = "user";
 
+const SUPERSEDED = "superseded";
+const SUGGEST_STREAM_TIMEOUT_MS = 20_000;
+const SUGGEST_BATCH_TIMEOUT_MS = 30_000;
+
 const MATERIAL_KINDS = [
   { value: "job_description", label: "Job description" },
   { value: "resume", label: "Resume" },
@@ -47,15 +51,26 @@ export default function Interview() {
   if (config.isLoading) {
     return <Centered><Loader2 className="h-5 w-5 animate-spin" /> Loading…</Centered>;
   }
+  if (config.isError) {
+    return (
+      <Centered>
+        <Card className="max-w-md">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2"><AlertCircle className="h-5 w-5" /> We could not reach the server</CardTitle>
+            <CardDescription>Check your connection and try again.</CardDescription>
+          </CardHeader>
+          <CardContent><Button onClick={() => config.refetch()}>Try again</Button></CardContent>
+        </Card>
+      </Centered>
+    );
+  }
   if (!config.data?.enabled) {
     return (
       <Centered>
         <Card className="max-w-md">
           <CardHeader>
             <CardTitle className="flex items-center gap-2"><Shield className="h-5 w-5" /> Interview Copilot is off</CardTitle>
-            <CardDescription>
-              This feature is behind a flag. Set <code>INTERVIEW_COPILOT_ENABLED=true</code> on the server to enable it.
-            </CardDescription>
+            <CardDescription>This feature is not available on this server right now.</CardDescription>
           </CardHeader>
         </Card>
       </Centered>
@@ -87,7 +102,7 @@ function Workspace({ dialects, liveAssistEnabled }: { dialects: readonly string[
       <TopBar
         right={
           <div className="flex items-center gap-3">
-            <LiveDot live={liveAssistEnabled} label={liveAssistEnabled ? "Live assist ready" : "Prep mode"} />
+            <span className="hidden sm:inline-flex"><LiveDot live={liveAssistEnabled} label={liveAssistEnabled ? "Live assist ready" : "Prep mode"} /></span>
             <Button variant="ghost" size="sm" onClick={tour.start}><CircleHelp className="mr-1.5 h-4 w-4" /> Walkthrough</Button>
             <Button asChild variant="outline" size="sm" className="hidden sm:inline-flex"><Link href="/interview/present">Prompter</Link></Button>
           </div>
@@ -105,7 +120,7 @@ function Workspace({ dialects, liveAssistEnabled }: { dialects: readonly string[
         </header>
 
         <Tabs value={tab} onValueChange={setTab}>
-          <TabsList className="mb-4">
+          <TabsList className="mb-4 h-auto flex-wrap">
             <TabsTrigger value="setup">Setup</TabsTrigger>
             <TabsTrigger value="brief">Brief</TabsTrigger>
             <TabsTrigger value="practice">Practice</TabsTrigger>
@@ -119,7 +134,8 @@ function Workspace({ dialects, liveAssistEnabled }: { dialects: readonly string[
           <TabsContent value="practice"><PracticeTab /></TabsContent>
           <TabsContent value="sql"><SqlTab dialects={dialects} /></TabsContent>
           <TabsContent value="present"><PresentTab /></TabsContent>
-          {liveAssistEnabled ? <TabsContent value="live"><LiveTab /></TabsContent> : null}
+          {/* Stays mounted: leaving the tab must not end capture or lose the transcript. */}
+          {liveAssistEnabled ? <TabsContent value="live" forceMount className="data-[state=inactive]:hidden"><LiveTab /></TabsContent> : null}
         </Tabs>
       </div>
       <Walkthrough open={tour.open} steps={steps} onClose={tour.close} onStep={i => { const target = TAB_ORDER[Math.max(0, i - 1)]; if (i > 0 && target) setTab(target); }} />
@@ -316,7 +332,7 @@ function SetupTab({ onBriefReady }: { onBriefReady?: () => void } = {}) {
 
           <div className="border-t border-slate-100 pt-3">
             <Button variant="ghost" size="sm" className="text-slate-500" disabled={create.isPending} onClick={() => void loadSamples()}>
-              Deleted the demo or just exploring? Load demo materials
+              Just exploring? Load demo materials
             </Button>
             {sampleStatus ? <p className="mt-1 text-xs text-slate-500">{sampleStatus}</p> : null}
           </div>
@@ -778,12 +794,14 @@ async function streamSuggestion(
   recent: ReturnType<typeof recentTurns>,
   onDelta: (fields: StreamingFields) => void,
   onFinal: (suggestion: LiveSuggestion) => void,
+  signal: AbortSignal,
 ): Promise<boolean> {
   const resp = await fetch("/api/interview/live/stream", {
     method: "POST",
     headers: { "content-type": "application/json" },
     credentials: "include",
     body: JSON.stringify({ workspaceId: WS, question, recent }),
+    signal,
   });
   if (!resp.ok || !resp.body) return false;
 
@@ -863,6 +881,7 @@ function LiveTab() {
   const lastSuggestedRef = useRef<string | null>(null);
   const seqRef = useRef(0);
   const inFlightRef = useRef(false);
+  const abortRef = useRef<AbortController | null>(null);
   const partialInFlightRef = useRef(false);
 
   const transcribe = trpc.interview.live.transcribeSegment.useMutation();
@@ -973,6 +992,10 @@ function LiveTab() {
     const recent = recentTurns(segmentsRef.current);
     const turnId = crypto.randomUUID();
     publisher.publish({ type: "start", id: turnId, question, at: Date.now() });
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const superseded = () => controller.signal.reason === SUPERSEDED;
+    const deadline = window.setTimeout(() => controller.abort(), SUGGEST_STREAM_TIMEOUT_MS);
     try {
       // Fast path: stream tokens for immediate display; finalize with grounding.
       const streamed = await streamSuggestion(
@@ -987,18 +1010,29 @@ function LiveTab() {
           setStreamPreview(null);
           publisher.publish({ type: "final", id: turnId, question, suggestion: final, at: Date.now() });
         },
-      );
+        controller.signal,
+      ).catch(error => {
+        if (superseded()) throw error;
+        return false; // stalled or dropped: try the non-streaming path once
+      });
       if (!streamed) {
-        // Fallback: non-streaming grounded suggestion.
-        const res = await suggest.mutateAsync({ workspaceId: WS, question, recent });
+        // Fallback: non-streaming grounded suggestion, bounded so Live can't wedge.
+        const res = await Promise.race([
+          suggest.mutateAsync({ workspaceId: WS, question, recent }),
+          new Promise<never>((_, reject) => window.setTimeout(() => reject(new Error("timeout")), SUGGEST_BATCH_TIMEOUT_MS)),
+        ]);
+        if (superseded()) return;
         setSuggestion(res.suggestion);
         setStreamPreview(null);
         publisher.publish({ type: "final", id: turnId, question, suggestion: res.suggestion, at: Date.now() });
       }
     } catch {
-      setStreamPreview(null);
-      setStatus("Could not get a suggestion. Check that your brief is approved.");
+      if (!superseded()) {
+        setStreamPreview(null);
+        setStatus("Could not get a suggestion for that one. Still listening. If this repeats, check that your brief is approved.");
+      }
     } finally {
+      window.clearTimeout(deadline);
       inFlightRef.current = false;
     }
   };
@@ -1009,9 +1043,16 @@ function LiveTab() {
   useEffect(() => {
     if (!listening) return;
     const timer = window.setInterval(() => {
-      if (inFlightRef.current) return;
       const plan = planSuggestion(segmentsRef.current, lastSuggestedRef.current, Date.now(), DEFAULT_LIVE_CONFIG);
-      if (plan.ready) void fireSuggest(plan.question);
+      if (!plan.ready) return;
+      if (!inFlightRef.current) {
+        void fireSuggest(plan.question);
+        return;
+      }
+      // A new question, or the interviewer continuing one we started answering too
+      // early: stop now. A mere re-transcription of the same words can finish.
+      const last = lastSuggestedRef.current ?? "";
+      if (plan.reason === "new" || plan.question.length > last.length + 12) abortRef.current?.abort(SUPERSEDED);
     }, 500);
     return () => window.clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1019,6 +1060,7 @@ function LiveTab() {
 
   const clearSession = () => {
     capture.stop();
+    abortRef.current?.abort(SUPERSEDED);
     setSegments([]);
     segmentsRef.current = [];
     lastSuggestedRef.current = null;

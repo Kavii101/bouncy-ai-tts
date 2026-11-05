@@ -269,9 +269,19 @@ const normalizeResponseFormat = ({
   };
 };
 
-const RETRY_MAX_RETRIES = 4;
+const RETRY_MAX_RETRIES = 2;
 const RETRY_BASE_DELAY_MS = 500;
-const RETRY_MAX_DELAY_MS = 30_000;
+const RETRY_MAX_DELAY_MS = 8_000;
+// Every provider call is bounded: a stalled upstream must surface as an error
+// the UI can show, never as a spinner that lasts forever.
+const LLM_ATTEMPT_TIMEOUT_MS = 60_000;
+const STREAM_FIRST_TOKEN_TIMEOUT_MS = 15_000;
+const STREAM_IDLE_TIMEOUT_MS = 12_000;
+
+// Only failures that can succeed on a second try. A 400/401/404 will not, and
+// retrying one just makes the person wait to see the same error.
+export const isRetryableStatus = (status: number) =>
+  status === 408 || status === 409 || status === 429 || status >= 500;
 
 type FetchInit = NonNullable<Parameters<typeof fetch>[1]>;
 
@@ -308,8 +318,8 @@ const fetchWithBackoff = async (
 
   for (let attempt = 0; attempt <= RETRY_MAX_RETRIES; attempt++) {
     try {
-      const response = await fetch(url, init);
-      if (response.ok || attempt === RETRY_MAX_RETRIES) {
+      const response = await fetch(url, { ...init, signal: AbortSignal.timeout(LLM_ATTEMPT_TIMEOUT_MS) });
+      if (response.ok || attempt === RETRY_MAX_RETRIES || !isRetryableStatus(response.status)) {
         return response;
       }
 
@@ -428,6 +438,8 @@ export type StreamParams = {
   maxTokens?: number;
   responseFormat?: ResponseFormat;
   outputSchema?: OutputSchema;
+  /** Aborts the upstream request, e.g. when the client disconnects. */
+  signal?: AbortSignal;
 };
 
 // Streams content deltas from the provider as they arrive (OpenAI-compatible
@@ -450,16 +462,38 @@ export async function* invokeLLMStream(params: StreamParams): AsyncGenerator<str
   });
   if (responseFormat) payload.response_format = responseFormat;
 
-  const response = await fetch(resolveApiUrl(), {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${ENV.forgeApiKey}`,
-    },
-    body: JSON.stringify(payload),
-  });
+  // One controller for caller aborts and both watchdogs, so each ends the same way.
+  const controller = new AbortController();
+  const abortFromCaller = () => controller.abort();
+  if (params.signal?.aborted) controller.abort();
+  params.signal?.addEventListener("abort", abortFromCaller, { once: true });
+  let watchdog: ReturnType<typeof setTimeout> | undefined;
+  const armWatchdog = (ms: number) => {
+    clearTimeout(watchdog);
+    watchdog = setTimeout(() => controller.abort(), ms);
+  };
+  armWatchdog(STREAM_FIRST_TOKEN_TIMEOUT_MS);
+
+  let response: Response;
+  try {
+    response = await fetch(resolveApiUrl(), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${ENV.forgeApiKey}`,
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    clearTimeout(watchdog);
+    params.signal?.removeEventListener("abort", abortFromCaller);
+    throw error;
+  }
 
   if (!response.ok || !response.body) {
+    clearTimeout(watchdog);
+    params.signal?.removeEventListener("abort", abortFromCaller);
     const errorText = await response.text().catch(() => response.statusText);
     throw new Error(`LLM stream failed: ${response.status} ${response.statusText} – ${errorText}`);
   }
@@ -472,6 +506,7 @@ export async function* invokeLLMStream(params: StreamParams): AsyncGenerator<str
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
+      armWatchdog(STREAM_IDLE_TIMEOUT_MS);
       buffer += decoder.decode(value, { stream: true });
       buffer = buffer.replace(/\r\n/g, "\n"); // tolerate CRLF SSE framing
 
@@ -498,6 +533,8 @@ export async function* invokeLLMStream(params: StreamParams): AsyncGenerator<str
   } finally {
     // Release the upstream connection on any exit — including when the consumer
     // (e.g. a disconnected SSE client) breaks the for-await early.
+    clearTimeout(watchdog);
+    params.signal?.removeEventListener("abort", abortFromCaller);
     try {
       await reader.cancel();
     } catch {

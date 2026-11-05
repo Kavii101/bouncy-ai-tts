@@ -40,7 +40,10 @@ export type LivePlanConfig = {
 };
 
 export const DEFAULT_LIVE_CONFIG: LivePlanConfig = {
-  pauseMs: 900,
+  // Added on top of the 700ms of silence capture requires before ending an
+  // utterance, so this stays small. If they were only pausing, the extended
+  // question supersedes the answer in progress.
+  pauseMs: 300,
   turnGapMs: 3500,
   dedupeSimilarity: 0.9,
   refineSimilarity: 0.55,

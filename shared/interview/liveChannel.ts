@@ -73,8 +73,9 @@ function pushHistory(history: AnswerEntry[], entry: AnswerEntry | null): AnswerE
 export function reduceAnswers(state: AnswersState, msg: ChannelMessage): AnswersState {
   switch (msg.type) {
     case "start": {
-      // A new turn begins; roll any finished/streaming current into history.
-      const history = state.current && state.current.id !== msg.id ? pushHistory(state.history, state.current) : state.history;
+      // A new turn begins; roll a finished current into history. One still
+      // streaming was abandoned for this turn, so it is a fragment and is dropped.
+      const history = state.current && state.current.id !== msg.id && !state.current.streaming ? pushHistory(state.history, state.current) : state.history;
       return { ...state, current: blankEntry(msg.id, msg.question, msg.at), history, updatedAt: msg.at };
     }
     case "stream": {

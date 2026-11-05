@@ -76,9 +76,11 @@ export function registerInterviewStreamRoute(app: Express): void {
       // Must be `res`: `req` is already destroyed once express.json has consumed
       // the body, so its "close" never fires and a disconnected client would
       // keep the upstream stream (and its token spend) running.
+      const upstream = new AbortController();
       let aborted = false;
       res.on("close", () => {
         aborted = true;
+        upstream.abort();
       });
 
       const started = Date.now();
@@ -90,6 +92,7 @@ export function registerInterviewStreamRoute(app: Express): void {
         ],
         outputSchema: SUGGEST_SCHEMA,
         maxTokens: SUGGEST_MAX_TOKENS,
+        signal: upstream.signal,
       })) {
         if (aborted || res.writableEnded) break;
         full += delta;
