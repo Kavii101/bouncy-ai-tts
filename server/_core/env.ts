@@ -11,6 +11,8 @@ export const ENV = {
   // base URL is api.openai.com, providerConfig picks a sensible default.
   llmModel: process.env.LLM_MODEL ?? "",
   transcriptionModel: process.env.TRANSCRIPTION_MODEL ?? "",
+  // Optional faster model for the post-answer claim check; falls back to LLM_MODEL.
+  claimCheckModel: process.env.CLAIM_CHECK_MODEL ?? "",
   // Interview Copilot feature flags. Both default OFF so the feature stays dark
   // until a deployment explicitly opts in. Live assist has its own flag because,
   // per the product plan, it must not be reachable until consent, retention, and

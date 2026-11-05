@@ -22,6 +22,7 @@ import {
   buildSuggestUser,
   finalizeSuggestion,
 } from "./answer-engine";
+import { checkClaims } from "./claim-check";
 import { interviewLog } from "./redaction";
 import { briefSchema } from "./schemas";
 import { getBrief } from "./store";
@@ -102,7 +103,9 @@ export function registerInterviewStreamRoute(app: Express): void {
       if (aborted || res.writableEnded) return;
 
       try {
-        const suggestion = finalizeSuggestion(full, brief);
+        // The text is already on screen, so this only delays the confidence label.
+        const suggestion = await checkClaims({ suggestion: finalizeSuggestion(full, brief), brief, recent, signal: upstream.signal });
+        if (aborted || res.writableEnded) return;
         interviewLog("live_stream_done", { workspaceId, latencyMs: Date.now() - started, confidence: suggestion.confidence, shouldVerify: suggestion.shouldVerify });
         res.write(`event: final\ndata: ${JSON.stringify({ suggestion })}\n\n`);
         res.end();

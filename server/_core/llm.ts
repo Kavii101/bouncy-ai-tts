@@ -70,6 +70,8 @@ export type InvokeParams = {
   model?: string;
   thinking?: Record<string, unknown>;
   reasoning?: Record<string, unknown>;
+  /** Lets the caller give up early; the request is cancelled and not retried. */
+  signal?: AbortSignal;
 };
 
 export type ToolCall = {
@@ -285,8 +287,17 @@ export const isRetryableStatus = (status: number) =>
 
 type FetchInit = NonNullable<Parameters<typeof fetch>[1]>;
 
-const sleep = (ms: number) =>
-  new Promise<void>(resolve => setTimeout(resolve, ms));
+const sleep = (ms: number, signal?: AbortSignal) =>
+  new Promise<void>(resolve => {
+    if (signal?.aborted) return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+  });
 
 const parseRetryAfter = (value: string | null): number | undefined => {
   if (!value) return undefined;
@@ -318,7 +329,8 @@ const fetchWithBackoff = async (
 
   for (let attempt = 0; attempt <= RETRY_MAX_RETRIES; attempt++) {
     try {
-      const response = await fetch(url, { ...init, signal: AbortSignal.timeout(LLM_ATTEMPT_TIMEOUT_MS) });
+      const timeout = AbortSignal.timeout(LLM_ATTEMPT_TIMEOUT_MS);
+      const response = await fetch(url, { ...init, signal: init.signal ? AbortSignal.any([init.signal, timeout]) : timeout });
       if (response.ok || attempt === RETRY_MAX_RETRIES || !isRetryableStatus(response.status)) {
         return response;
       }
@@ -334,14 +346,14 @@ const fetchWithBackoff = async (
       console.warn(
         `LLM request retry ${attempt + 1}/${RETRY_MAX_RETRIES} after status ${response.status}`
       );
-      await sleep(computeBackoffDelay(attempt, retryAfterMs));
+      await sleep(computeBackoffDelay(attempt, retryAfterMs), init.signal ?? undefined);
     } catch (error) {
       lastError = error;
-      if (attempt === RETRY_MAX_RETRIES) throw error;
+      if (attempt === RETRY_MAX_RETRIES || init.signal?.aborted) throw error;
       console.warn(
         `LLM request retry ${attempt + 1}/${RETRY_MAX_RETRIES} after network error`
       );
-      await sleep(computeBackoffDelay(attempt));
+      await sleep(computeBackoffDelay(attempt), init.signal ?? undefined);
     }
   }
 
@@ -367,6 +379,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     reasoning,
     maxTokens,
     max_tokens,
+    signal,
   } = params;
 
   const payload: Record<string, unknown> = {
@@ -420,6 +433,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
       authorization: `Bearer ${ENV.forgeApiKey}`,
     },
     body: JSON.stringify(payload),
+    signal,
   });
 
   if (!response.ok) {
